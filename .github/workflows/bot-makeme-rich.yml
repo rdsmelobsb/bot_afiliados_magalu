@@ -1,0 +1,56 @@
+name: Análise Diária Alpha-Profit
+
+on:
+  # 1. Permite que você rode este workflow manualmente pela aba "Actions" do GitHub
+  workflow_dispatch:
+
+  # 2. Agenda a execução diária
+  schedule:
+    # Roda "às 08:00 UTC" todos os dias.
+    # (No Brasil, isso é 5:00 AM BRT, um bom horário para "acordar" com o e-mail)
+    - cron: '0 8 * * *'
+
+jobs:
+  run-scraper-and-analysis:
+    runs-on: ubuntu-latest # Usar a máquina virtual padrão do GitHub
+
+    steps:
+      # Etapa 1: Baixar o código do seu repositório para a máquina virtual
+      - name: 1. Checkout do Repositório
+        uses: actions/checkout@v4
+
+      # Etapa 2: Configurar o ambiente Python
+      - name: 2. Configurar Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10' # Uma versão estável e moderna do Python
+
+      # Etapa 3: Instalar as bibliotecas Python necessárias
+      - name: 3. Instalar Dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas requests beautifulsoup4 google-generativeai
+      
+      # Etapa 4: Executar o script principal
+      - name: 4. Executar o Script Alpha-Profit
+        # MUDE "seu_script.py" para o nome exato do seu arquivo .py
+        run: python seu_script.py 
+        env:
+          # Define as variáveis de ambiente que o script precisa, puxando dos "Secrets" do GitHub
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_DESTINATARIO: ${{ secrets.EMAIL_DESTINATARIO }}
+
+      # Etapa 5: Salvar os arquivos gerados como "Artefatos"
+      # Isso permite que você baixe os arquivos .csv e .json gerados pela execução
+      - name: 5. Upload dos Artefatos de Resultado
+        if: always() # Garante que os artefatos subam mesmo se o script falhar
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpha-profit-results
+          path: |
+            produtos_extraidos.csv
+            insumo_ia.json
+            oportunidades_alpha_profit.json
+          retention-days: 7 # Guarda os artefatos por 7 dias
