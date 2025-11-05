@@ -260,8 +260,7 @@ def gerar_json_para_ia(df):
 # --- 4. Funções da IA (Gemini) ---
 
 MODELOS_DISPONIVEIS = [
-    "gemini-1.5-pro-latest",  # Adicionado o 1.5 Pro como primeira opção
-    # "gemini-2.5-pro", # Mantido como fallback se o 2.5 não existir no seu billing
+     "gemini-2.5-pro", # Mantido como fallback se o 2.5 não existir no seu billing
 ]
 
 
@@ -627,3 +626,4 @@ if __name__ == "__main__":
     if not EMAIL_DISPARO or not EMAIL_SENHA:
         logging.warning("Variáveis 'EMAIL_USER' e 'EMAIL_PASSWORD' não definidas.")
         logging.warning("O e-mail de alerta NÃO foi enviado.")
+
