@@ -1,0 +1,51 @@
+# .github/workflows/alpha_profit_bot.yml
+
+name: 'Alpha-Profit: Execução Diária'
+
+on:
+  # Permite que você rode este workflow manualmente pela aba "Actions"
+  workflow_dispatch:
+
+  # Roda todos os dias às 09:30 (Horário de Brasília / UTC-3)
+  # 09:30 BRT = 12:30 UTC
+  schedule:
+    - cron: '30 12 * * *'
+
+jobs:
+  run-alpha-profit-bot:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: '1. Checkout do Repositório'
+        uses: actions/checkout@v4
+
+      - name: '2. Configurar Python 3.10'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: '3. Instalar Dependências'
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas requests beautifulsoup4 google-generativeai
+
+      - name: '4. Executar o Script (bot_make_rich.py)'
+        run: python bot_make_rich.py
+        env:
+          # Injeta os segredos do GitHub como variáveis de ambiente
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+
+      - name: '5. Salvar Artefatos (Resultados)'
+        # Este passo sempre será executado, mesmo se o passo 4 falhar
+        # Isso ajuda a salvar logs ou arquivos parciais para debug
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpha-profit-resultados
+          path: |
+            produtos_extraidos.csv
+            insumo_ia.json
+            oportunidades_alpha_profit.json
+          retention-days: 7 # Guarda os resultados por 7 dias
