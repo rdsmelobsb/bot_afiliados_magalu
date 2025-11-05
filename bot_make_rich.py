@@ -321,7 +321,7 @@ class MandaEmail:
 <br><br>
 <div style="border-top: 1px solid #ddd; padding-top: 20px;">
   <p style="font-style: italic; color: #555;">Alpha-Profit AI Bot</p>
-  <img src="https://logodownload.org/wp-content/uploads/2014/04/magalu-logo-0.png" alt="Logo Magalu" style="width: 150px; height: auto;">
+  <img src="https://ci3.googleusercontent.com/meips/ADKq_NZNnO1Uv8e0QiAHUG--ckV2LDa1U2j3GOLJs8Z-yXbEGFVoEXuTza7ZsxBT3ViSHgUgX8yrpTHkrTnujVq5Kp94rWhDRryaeSIYQJv4ooOR4a8fSp8SAAw=s0-d-e1-ft#https://novasb.com.br/wp-content/uploads/assinatura/RAFAELMELO.png" alt="assinatura" style="width: 150px; height: auto;">
 </div>
 """
        
@@ -359,7 +359,7 @@ class MandaEmail:
 
 
     def enviar_email_oportunidades(self, oportunidades_dict, email_destinatario):
-        ASSUNTO = f'Alpha-Profit: 3 Oportunidades de Ouro Detectadas! ({time.strftime("%d/%m/%Y")})'
+        ASSUNTO = f'Alpha-Profit: Oportunidades de Ouro Detectadas! ({time.strftime("%d/%m/%Y")})'
         
         msg = EmailMessage()
         msg['Subject'] = ASSUNTO
@@ -381,7 +381,7 @@ class MandaEmail:
 </head>
 <body>
     <div class="container">
-        <p>Olá, Estrategista,</p>
+        <p>Olá,</p>
         <p>O "Alpha-Profit" AI Bot completou a varredura e análise. Foram identificadas as <strong>3 oportunidades de ouro</strong> com maior potencial de conversão com base em suas diretrizes:</p>
 
         {oportunidades_html}
@@ -414,8 +414,8 @@ if __name__ == "__main__":
     # Altere a URL_BASE para a categoria que você quer analisar
     # Nicho: Games, Geek, Tech
     
-    #URL_BASE = "https://www.magazinevoce.com.br/magazinedealz/informatica/l/in/"
-    URL_BASE = "https://www.magazinevoce.com.br/magazinedealz/games/l/ga/"
+    URL_BASE = "https://www.magazinevoce.com.br/magazinedealz/informatica/l/in/"
+    #URL_BASE = "https://www.magazinevoce.com.br/magazinedealz/games/l/ga/"
     all_dfs = [] 
     total_pages = 1
     page_to_scrape = 1
@@ -534,4 +534,5 @@ if __name__ == "__main__":
             logging.error(f"Falha ao instanciar ou enviar e-mail: {e}")
     else:
         logging.warning("Variáveis 'EMAIL_DISPARO' e 'EMAIL_SENHA' não definidas.")
+
         logging.warning("O e-mail de alerta NÃO será enviado.")
