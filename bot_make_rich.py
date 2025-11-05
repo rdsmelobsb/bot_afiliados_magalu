@@ -446,65 +446,82 @@ if __name__ == "__main__":
 
     # --- ETAPA 1: SCRAPING ---
 
-    # Altere a URL_BASE para a categoria que você quer analisar
-    # Nicho: Games, Geek, Tech
+    # --- INÍCIO DA ALTERAÇÃO SOLICITADA ---
+    # Lista de URLs base para raspar (Nicho: Games, Geek, Tech)
+    URLS_BASE = [
+        "https://www.magazinevoce.com.br/magazinedealz/informatica/l/in/",
+        "https://www.magazinevoce.com.br/magazinedealz/games/l/ga/",
+        # Adicione quantas URLs de categoria quiser aqui
+        # "https://www.magazinevoce.com.br/magazinedealz/telefonia/l/te/"
+    ]
 
-    URL_BASE = "https://www.magazinevoce.com.br/magazinedealz/informatica/l/in/"
-    # URL_BASE = "https://www.magazinevoce.com.br/magazinedealz/games/l/ga/"
-    all_dfs = []
-    total_pages = 1
-    page_to_scrape = 1
+    all_dfs = []  # Lista para acumular DataFrames de TODAS as categorias e páginas
 
-    logging.info(f"Iniciando scraping da URL base: {URL_BASE}")
+    logging.info(f"Iniciando scraping para {len(URLS_BASE)} categoria(s)...")
 
-    while page_to_scrape <= total_pages:
+    # Loop principal para iterar sobre cada URL base
+    for url_base in URLS_BASE:
 
-        if page_to_scrape == 1:
-            current_url = URL_BASE
-        else:
-            if "?" in URL_BASE:
-                current_url = f"{URL_BASE}&page={page_to_scrape}"
+        logging.info(f"\n[INICIANDO CATEGORIA]: {url_base}")
+        total_pages = 1
+        page_to_scrape = 1
+
+        while page_to_scrape <= total_pages:
+
+            if page_to_scrape == 1:
+                current_url = url_base
             else:
-                current_url = f"{URL_BASE}?page={page_to_scrape}"
+                if "?" in url_base:
+                    current_url = f"{url_base}&page={page_to_scrape}"
+                else:
+                    current_url = f"{url_base}?page={page_to_scrape}"
 
-        logging.info(f"--- Raspando Página {page_to_scrape} de {total_pages} ---")
+            logging.info(f"--- Raspando Página {page_to_scrape} de {total_pages} ---")
 
-        df_pagina, paginas_detectadas = extrair_dados_magalu_live(current_url)
+            df_pagina, paginas_detectadas = extrair_dados_magalu_live(current_url)
 
-        if page_to_scrape == 1 and paginas_detectadas > 1:
-            total_pages = paginas_detectadas
-            logging.info(f"Total de páginas detectado: {total_pages}")
+            if page_to_scrape == 1 and paginas_detectadas > 1:
+                total_pages = paginas_detectadas
+                logging.info(
+                    f"Total de páginas detectado para esta categoria: {total_pages}"
+                )
 
-        if df_pagina is not None and not df_pagina.empty:
-            logging.info(
-                f"Sucesso: {len(df_pagina)} produtos adicionados da página {page_to_scrape}."
-            )
-            all_dfs.append(df_pagina)
-        else:
-            logging.warning(
-                f"Não foi possível extrair dados da página {page_to_scrape} ou a página estava vazia."
-            )
+            if df_pagina is not None and not df_pagina.empty:
+                logging.info(
+                    f"Sucesso: {len(df_pagina)} produtos adicionados da página {page_to_scrape}."
+                )
+                all_dfs.append(df_pagina)  # Adiciona o df da página à lista total
+            else:
+                logging.warning(
+                    f"Não foi possível extrair dados da página {page_to_scrape} ou a página estava vazia."
+                )
 
-        page_to_scrape += 1
-        time.sleep(1)  # Pausa de 1 segundo (boa prática)
+            page_to_scrape += 1
+            time.sleep(1)  # Pausa de 1 segundo (boa prática)
+
+    # --- FIM DA ALTERAÇÃO SOLICITADA ---
 
     if not all_dfs:
-        logging.error("Nenhum produto foi extraído de nenhuma página. Encerrando.")
+        logging.error(
+            "Nenhum produto foi extraído de nenhuma página/categoria. Encerrando."
+        )
         sys.exit(0)
 
     # --- ETAPA 2: PROCESSAMENTO E GERAÇÃO DE INSUMO ---
 
+    # Concatena TODOS os DataFrames (de todas as páginas e categorias) em um só
     df_produtos = pd.concat(all_dfs, ignore_index=True)
+
     logging.info(
-        f"\n[SUCESSO] Total de produtos extraídos de {len(all_dfs)} página(s): {len(df_produtos)}"
+        f"\n[SUCESSO] Total de produtos extraídos de {len(URLS_BASE)} categoria(s): {len(df_produtos)}"
     )
 
     df_produtos.to_csv("produtos_extraidos.csv", index=False, encoding="utf-8-sig")
     logging.info("DataFrame completo salvo em 'produtos_extraidos.csv'")
 
-    # --- INÍCIO DA ALTERAÇÃO SOLICITADA ---
-    # Filtra e prioriza os 30 produtos mais relevantes para a IA,
-    # seguindo a lógica do "ALPHA_PROFIT_SYSTEM_PROMPT" (Sweet Spot e Desconto).
+    # --- Filtro Estratégico (Top 30 do TOTAL) ---
+    # Filtra e prioriza os 30 produtos mais relevantes para a IA
+    # do DataFrame *combinado*
 
     logging.info(
         f"Aplicando filtro estratégico para selecionar os 30 melhores produtos para a IA..."
@@ -525,7 +542,7 @@ if __name__ == "__main__":
 
     # Remove a coluna auxiliar antes de enviar para a IA
     df_para_ia = df_para_ia.drop(columns=["prioridade_sweet_spot"])
-    # --- FIM DA ALTERAÇÃO SOLICITADA ---
+    # --- Fim do Filtro ---
 
     # Passa o DataFrame filtrado e ordenado para a função de geração de JSON
     json_input_data = gerar_json_para_ia(df_para_ia)
