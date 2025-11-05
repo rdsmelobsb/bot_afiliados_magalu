@@ -19,7 +19,6 @@ logging.basicConfig(
 try:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        # CORREÇÃO: Mensagem de erro alinhada com a variável usada
         logging.error("A variável de ambiente 'GEMINI_API_KEY' não foi definida.")
         logging.error("Defina-a antes de rodar: export GEMINI_API_KEY='SUA_CHAVE'")
         sys.exit(1)  # Encerra o script se a chave não estiver presente
@@ -32,6 +31,7 @@ except Exception as e:
 
 # --- 2. Diretriz de Sistema (Prompt da IA) ---
 
+# --- REATORAÇÃO: Atualizado para 30 produtos ---
 ALPHA_PROFIT_SYSTEM_PROMPT = """
 ## DIRETRIZ DE SISTEMA: PROJETO "ALPHA-PROFIT"
 
@@ -42,26 +42,26 @@ Você é o "Alpha-Profit", um C-Level AI Strategist especializado em e-commerce 
 Analisamos um catálogo de produtos de afiliados em tempo real. O público-alvo é "mar aberto" (amplo), +18. O "Ponto Doce" (Sweet Spot) de conversão por impulso é um Ticket Médio de R$ 50,00.
 
 **3. DIRETRIZ DE ENTRADA (INPUT):**
-Eu fornecerei um [INPUT_DATA], que é uma string JSON representando um DataFrame (agrupado por SKU) com os seguintes campos-chave:
+Eu fornecerei um [INPUT_DATA], que é uma string JSON representando um DataFrame. **IMPORTANTE: Esta lista já foi pré-filtrada por mim (Python) para conter apenas os ~100 melhores candidatos** (com base no 'Sweet Spot' de R$ 35-R$ 60 e ordenados pelo maior desconto).
+
 * `sku`: Identificador único.
 * `nome_produto`: Nome do produto.
 * `preco_atual`: Preço de venda atual (em R$).
 * `preco_antigo`: Preço original (para cálculo de desconto).
 * `percentual_desconto`: (preco_antigo - preco_atual) / preco_antigo.
 * `categoria`: (Ex: 'Games', 'Hardware', 'Colecionáveis', 'Tecnologia').
-* `comissao_percent`: (Opcional, mas VITAL) O percentual de comissão do afiliado.
+* `comissao_percent`: (Opcional) O percentual de comissão do afiliado.
 * `url_afiliado`: O link de compra.
 
 **4. PROCESSO DE DECISÃO ESTRATÉGICA (THOUGHT_PROCESS):**
-Seu objetivo é identificar as 3 (TRÊS) "Oportunidades de Ouro". Você deve priorizar com base nesta hierarquia de decisão:
+Seu objetivo é identificar as **30 (TRINTA)** "Oportunidades de Ouro" desta lista de candidatos. Você deve priorizar com base nesta hierarquia de decisão:
 
-* **Filtro 1: Aderência ao Ticket (Peso 40%)**: Selecione produtos onde `preco_atual` esteja na faixa de R$ 35,00 a R$ 60,00. Este é o nosso "Sweet Spot" de R$ 50.
-* **Filtro 2: Percepção de Valor (Peso 35%)**: Priorize produtos com o MAIOR `percentual_desconto`. A escassez e a oportunidade (promoções) são os maiores gatilhos para o público "mar aberto".
-* **Filtro 3: Potencial de Lucro (Peso 25%)**: Se `comissao_percent` estiver disponível, use-o como um desempate de alta prioridade. Maximize nosso R$ (Receita = preco_atual * comissao_percent).
-* **Filtro 4: Relevância (Qualificador)**: O produto deve ser Banal? NÃO. Deve ter apelo imediato para o nicho (Games, Geek, Tech). Um mouse gamer obscuro em promoção é MELHOR que um fone de ouvido genérico.
+* **Filtro 1 e 2 (Já feitos por mim):** Os produtos já estão no "Sweet Spot" (R$ 35-R$ 60) e ordenados por desconto.
+* **Filtro 3: Relevância (Seu Foco Principal):** Sua tarefa é aplicar o filtro qualitativo. O produto deve ter apelo imediato para o nicho (Games, Geek, Tech). Um mouse gamer obscuro em promoção é MELHOR que um fone de ouvido genérico ou um cabo USB comum. **Seja crítico e selecione apenas os mais relevantes para o nicho.**
+* **Filtro 4: Potencial de Lucro (Desempate):** Se `comissao_percent` estiver disponível, use-o como um desempate.
 
 **5. DIRETRIZ DE SAÍDA (OUTPUT):**
-Sua resposta deve ser um JSON ESTRITO, sem texto introdutório ou final. O JSON deve conter uma chave principal "oportunidades" que é um array de 3 objetos.
+Sua resposta deve ser um JSON ESTRITO, sem texto introdutório ou final. O JSON deve conter uma chave principal "oportunidades" que é um array de **30 objetos**.
 
 **Cumpra este formato EXATAMENTE:**
 
@@ -93,19 +93,7 @@ Sua resposta deve ser um JSON ESTRITO, sem texto introdutório ou final. O JSON 
         "cta": "..."
       }
     },
-    {
-      "sku_selecionado": "SKU_DO_PRODUTO_3",
-      "nome_produto": "Nome do Produto 3",
-      "preco_atual": 39.90,
-      "percentual_desconto": 50,
-      "url_afiliado": "URL_AFILIADO_AQUI_3",
-      "razao_selecao": "...",
-      "copy_venda": {
-        "titulo": "...",
-        "corpo": "...",
-        "cta": "..."
-      }
-    }
+    // ... (Mais 28 objetos aqui, totalizando 30)
   ]
 }
 
@@ -262,6 +250,9 @@ def gerar_json_para_ia(df):
         logging.warning("DataFrame está vazio. Nenhum JSON gerado.")
         return None
 
+    # Garante que o JSON não tenha NaNs que quebram o parser
+    df = df.fillna(value=pd.NA).where(pd.notna(df), None)
+
     json_input_para_ia = df.to_json(orient="records", force_ascii=False, indent=2)
     return json_input_para_ia
 
@@ -269,7 +260,8 @@ def gerar_json_para_ia(df):
 # --- 4. Funções da IA (Gemini) ---
 
 MODELOS_DISPONIVEIS = [
-    "gemini-2.5-pro",
+    "gemini-1.5-pro-latest",  # Adicionado o 1.5 Pro como primeira opção
+    # "gemini-2.5-pro", # Mantido como fallback se o 2.5 não existir no seu billing
 ]
 
 
@@ -279,7 +271,6 @@ def gemini_fx(prompt):
     """
     result = None
 
-    # MELHORIA: Usa a lista de modelos global
     for modelo_nome in MODELOS_DISPONIVEIS:
         try:
             logging.info(f"Tentando usar o modelo: {modelo_nome}")
@@ -342,7 +333,6 @@ def extrair_json_da_resposta(texto_ia):
 class MandaEmail:
     def __init__(self, email_disparo, senha, host="smtp.gmail.com", porta=587):
         if not email_disparo or not senha:
-            # MELHORIA: Mensagem de erro alinhada com as variáveis de ambiente
             raise ValueError(
                 "EMAIL_USER e EMAIL_PASSWORD devem ser definidos nas variáveis de ambiente."
             )
@@ -363,6 +353,7 @@ class MandaEmail:
         """Helper para transformar o JSON de oportunidades em HTML."""
         html_out = ""
         try:
+            # Loop funciona para 3, 30, ou N oportunidades
             for i, op in enumerate(oportunidades_dict.get("oportunidades", [])):
                 copy = op.get("copy_venda", {})
                 html_out += f"""
@@ -391,7 +382,12 @@ class MandaEmail:
             return "<p>Erro ao formatar o corpo do e-mail.</p>"
 
     def enviar_email_oportunidades(self, oportunidades_dict, email_destinatario):
-        ASSUNTO = f'Alpha-Profit: Oportunidades de Ouro Detectadas! ({time.strftime("%d/%m/%Y")})'
+
+        # --- REATORAÇÃO: Contagem dinâmica ---
+        lista_oportunidades = oportunidades_dict.get("oportunidades", [])
+        num_ops = len(lista_oportunidades)
+
+        ASSUNTO = f'Alpha-Profit: Top {num_ops} Oportunidades Detectadas! ({time.strftime("%d/%m/%Y")})'
 
         msg = EmailMessage()
         msg["Subject"] = ASSUNTO
@@ -401,6 +397,7 @@ class MandaEmail:
         # Gera o corpo HTML a partir do dicionário de oportunidades
         oportunidades_html = self._formatar_oportunidades_html(oportunidades_dict)
 
+        # --- REATORAÇÃO: Texto dinâmico ---
         mensagem_html = f"""
 <!DOCTYPE html>
 <html>
@@ -414,7 +411,7 @@ class MandaEmail:
 <body>
     <div class="container">
         <p>Olá,</p>
-        <p>O "Alpha-Profit" AI Bot completou a varredura e análise. Foram identificadas as <strong>3 oportunidades de ouro</strong> com maior potencial de conversão com base em suas diretrizes:</p>
+        <p>O "Alpha-Profit" AI Bot completou a varredura e análise. Foram identificadas as <strong>{num_ops} oportunidades de ouro</strong> com maior potencial de conversão com base em suas diretrizes:</p>
 
         {oportunidades_html}
 
@@ -444,15 +441,21 @@ class MandaEmail:
 
 if __name__ == "__main__":
 
-    # --- MELHORIA: Constantes para configuração ---
-    ARQUIVO_CSV_PRODUTOS = "produtos_extraidos.csv"
-    ARQUIVO_JSON_INSUMO = "insumo_ia.json"
-    ARQUIVO_JSON_RESULTADO = "oportunidades_alpha_profit.json"
+    # --- Constantes para configuração ---
+    ARQUIVO_CSV_PRODUTOS = "produtos_extraidos_COMPLETO.csv"
+    ARQUIVO_JSON_INSUMO = "insumo_ia_CANDIDATOS.json"
+    ARQUIVO_JSON_RESULTADO = "oportunidades_alpha_profit_FINAL.json"
 
-    # --- MELHORIA (SUA SOLICITAÇÃO): Lista de URLs para raspar ---
+    # --- REATORAÇÃO: Constantes para pré-filtragem ---
+    PRECO_MIN_SWEETSPOT = 35.0
+    PRECO_MAX_SWEETSPOT = 60.0
+    N_CANDIDATOS_PARA_IA = 100  # Enviamos os 100 melhores para a IA escolher 30
+
     URLS_PARA_RASPAR = [
         "https://www.magazinevoce.com.br/magazinedealz/informatica/l/in/",
         "https://www.magazinevoce.com.br/magazinedealz/games/l/ga/",
+        "https://www.magazinevoce.com.br/magazinedealz/informatica-acessorios/l/inca/",
+        "https://www.magazinevoce.com.br/magazinedealz/pc-gamer/l/pcga/",
     ]
 
     all_dfs = []
@@ -464,7 +467,6 @@ if __name__ == "__main__":
         logging.info(f"Iniciando scraping da URL base: {url_base}")
         logging.info("=" * 30)
 
-        # Reseta a paginação para cada nova URL base
         total_pages = 1
         page_to_scrape = 1
 
@@ -503,27 +505,61 @@ if __name__ == "__main__":
         logging.error("Nenhum produto foi extraído de nenhuma página. Encerrando.")
         sys.exit(0)
 
-    # --- ETAPA 2: PROCESSAMENTO E GERAÇÃO DE INSUMO ---
+    # --- ETAPA 2: PROCESSAMENTO, PRÉ-FILTRAGEM E GERAÇÃO DE INSUMO ---
 
     df_produtos = pd.concat(all_dfs, ignore_index=True)
+    # Remove duplicados pelo SKU, mantendo o que apareceu primeiro
+    df_produtos = df_produtos.drop_duplicates(subset=["sku"], keep="first")
+
     logging.info(
-        f"\n[SUCESSO] Total de produtos extraídos de {len(all_dfs)} página(s): {len(df_produtos)}"
+        f"\n[SUCESSO] Total de produtos extraídos (sem duplicados): {len(df_produtos)}"
     )
 
-    # Usa a constante
+    # Salva o CSV *antes* de filtrar, para ter o backup completo
     df_produtos.to_csv(ARQUIVO_CSV_PRODUTOS, index=False, encoding="utf-8-sig")
-    logging.info(f"DataFrame completo salvo em '{ARQUIVO_CSV_PRODUTOS}'")
+    logging.info(
+        f"DataFrame completo (antes da filtragem) salvo em '{ARQUIVO_CSV_PRODUTOS}'"
+    )
 
-    json_input_data = gerar_json_para_ia(df_produtos)
+    # --- REATORAÇÃO: LÓGICA DE PRÉ-FILTRAGEM INTELIGENTE ---
+
+    # 1. Aplicar Filtro 1 (Sweet Spot de Preço)
+    df_filtrado = df_produtos[
+        df_produtos["preco_atual"].between(PRECO_MIN_SWEETSPOT, PRECO_MAX_SWEETSPOT)
+    ].copy()
+    logging.info(
+        f"Produtos após Filtro 1 (Preço R${PRECO_MIN_SWEETSPOT}-R${PRECO_MAX_SWEETSPOT}): {len(df_filtrado)}"
+    )
+
+    # 2. Aplicar Filtro 2 (Maior Desconto)
+    # Produtos com desconto 0 são filtrados aqui
+    df_filtrado = df_filtrado[df_filtrado["percentual_desconto"] > 0]
+    df_filtrado = df_filtrado.sort_values(by="percentual_desconto", ascending=False)
+    logging.info(f"Produtos com desconto > 0: {len(df_filtrado)}")
+
+    # 3. Criar a lista de candidatos (Top N)
+    df_candidatos = df_filtrado.head(N_CANDIDATOS_PARA_IA)
+    logging.info(
+        f"Top {len(df_candidatos)} candidatos selecionados (por desconto) para análise da IA."
+    )
+
+    if df_candidatos.empty:
+        logging.error(
+            f"Nenhum produto encontrado no 'Sweet Spot' e com desconto. Encerrando."
+        )
+        sys.exit(0)
+
+    # 4. Gerar o JSON de insumo APENAS com os candidatos
+    json_input_data = gerar_json_para_ia(df_candidatos)
 
     if not json_input_data:
         logging.error("Falha ao gerar o JSON de insumo para a IA. Encerrando.")
         sys.exit(0)
 
-    # Usa a constante
+    # Salva o JSON que será enviado para a IA
     with open(ARQUIVO_JSON_INSUMO, "w", encoding="utf-8") as f:
         f.write(json_input_data)
-    logging.info(f"Insumo JSON salvo em '{ARQUIVO_JSON_INSUMO}'")
+    logging.info(f"Insumo JSON (apenas candidatos) salvo em '{ARQUIVO_JSON_INSUMO}'")
 
     # --- ETAPA 3: CHAMADA DA IA (ALPHA-PROFIT) ---
 
@@ -537,7 +573,9 @@ if __name__ == "__main__":
     """
 
     logging.info("\n" + "=" * 25 + " CHAMANDO ALPHA-PROFIT (GEMINI) " + "=" * 25)
-    logging.info("Analisando dados para encontrar as 3 'Oportunidades de Ouro'...")
+    logging.info(
+        f"Analisando {len(df_candidatos)} candidatos para encontrar as 30 'Oportunidades de Ouro'..."
+    )
 
     api_response = gemini_fx(final_prompt)
 
@@ -550,34 +588,27 @@ if __name__ == "__main__":
     print(json_final_output)
 
     try:
-        # Usa a constante
+        # Salva o resultado final da IA
         with open(ARQUIVO_JSON_RESULTADO, "w", encoding="utf-8") as f:
             f.write(json_final_output)
         logging.info(f"\n[SUCESSO] Oportunidades salvas em '{ARQUIVO_JSON_RESULTADO}'")
     except Exception as e:
         logging.error(f"\nErro ao salvar arquivo JSON final: {e}")
 
-    # --- ETAPA 5: ENVIO DE E-MAIL (NOVA) ---
+    # --- ETAPA 5: ENVIO DE E-MAIL ---
 
     logging.info("\n" + "=" * 25 + " ENVIANDO E-MAIL " + "=" * 25)
 
-    # Carrega as credenciais de e-mail do ambiente
     EMAIL_DISPARO = os.getenv("EMAIL_USER")
     EMAIL_SENHA = os.getenv("EMAIL_PASSWORD")
-
-    # MELHORIA: Carrega o destinatário do ambiente, com um fallback
     EMAIL_DESTINATARIO = os.getenv("EMAIL_DESTINATARIO", "rafael.melo@novagencia.com")
 
-    # MELHORIA: Validação acontece dentro do 'try'
     try:
-        # Instancia e envia o e-mail
-        # A própria classe MandaEmail vai disparar ValueError se as vars não existirem
         mailer = MandaEmail(email_disparo=EMAIL_DISPARO, senha=EMAIL_SENHA)
 
         # Carrega o dicionário Python a partir do JSON final
         oportunidades_dict = json.loads(json_final_output)
 
-        # Verifica se a IA retornou um erro
         if "erro" in oportunidades_dict:
             logging.error(
                 f"A IA retornou um erro, e-mail não será enviado. Erro: {oportunidades_dict['erro']}"
@@ -589,7 +620,6 @@ if __name__ == "__main__":
             )
 
     except (ValueError, json.JSONDecodeError) as e:
-        # Pega o ValueError do MandaEmail ou erro de decode do JSON
         logging.error(f"Falha ao preparar ou enviar e-mail: {e}")
     except Exception as e:
         logging.error(f"Erro inesperado no envio de e-mail: {e}")
