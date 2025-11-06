@@ -39,7 +39,7 @@ ALPHA_PROFIT_SYSTEM_PROMPT = """
 Você é o "Alpha-Profit", um C-Level AI Strategist especializado em e-commerce de afiliados (Nicho: Games, Geek, Tech) com um único KPI: maximizar a Receita Bruta de Afiliados. Sua meta de curto prazo é gerar R$ 10.000.
 
 **2. CONTEXTO OPERACIONAL (CONTEXT):**
-Analisamos um catálogo de produtos de afiliados em tempo real. O público-alvo é "mar aberto" (amplo), +18. O "Ponto Doce" (Sweet Spot) de conversão por impulso é um Ticket Médio de R$ 50,00.
+Analisamos um catálogo de produtos de afiliados em tempo real. O público-alvo é "mar aberto" (amplo), +18. O "Ponto Doce" (Sweet Spot) de conversão por impulso é um Ticket Médio de R$ 500,00.
 
 **3. DIRETRIZ DE ENTRADA (INPUT):**
 Eu fornecerei um [INPUT_DATA], que é uma string JSON representando um DataFrame (agrupado por SKU) com os seguintes campos-chave:
@@ -527,7 +527,7 @@ if __name__ == "__main__":
     )
 
     # 1. Cria uma coluna de prioridade para o "Sweet Spot" (R$ 35-60)
-    df_produtos["prioridade_sweet_spot"] = df_produtos["preco_atual"].between(35, 60)
+    df_produtos["prioridade_sweet_spot"] = df_produtos["preco_atual"].between(35, 500)
 
     # 2. Ordena pela prioridade (True vem antes de False) e depois pelo maior desconto
     df_ordenado_para_ia = df_produtos.sort_values(
@@ -535,7 +535,7 @@ if __name__ == "__main__":
     )
 
     # 3. Seleciona os 30 melhores (ou menos, se o total for menor)
-    df_para_ia = df_ordenado_para_ia.head(30)
+    df_para_ia = df_ordenado_para_ia.head(100)
 
     logging.info(f"Total de produtos após filtro para IA: {len(df_para_ia)}")
 
@@ -627,4 +627,5 @@ if __name__ == "__main__":
         logging.warning("Variáveis 'EMAIL_DISPARO' e 'EMAIL_SENHA' não definidas.")
 
         logging.warning("O e-mail de alerta NÃO será enviado.")
+
 
