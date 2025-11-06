@@ -451,8 +451,7 @@ if __name__ == "__main__":
     URLS_BASE = [
         "https://www.magazinevoce.com.br/magazinedealz/informatica/l/in/",
         "https://www.magazinevoce.com.br/magazinedealz/games/l/ga/",
-        # Adicione quantas URLs de categoria quiser aqui
-        # "https://www.magazinevoce.com.br/magazinedealz/telefonia/l/te/"
+        "https://www.magazinevoce.com.br/magazinedealz/casa-inteligente/l/ci/"
     ]
 
     all_dfs = []  # Lista para acumular DataFrames de TODAS as categorias e páginas
@@ -628,3 +627,4 @@ if __name__ == "__main__":
         logging.warning("Variáveis 'EMAIL_DISPARO' e 'EMAIL_SENHA' não definidas.")
 
         logging.warning("O e-mail de alerta NÃO será enviado.")
+
