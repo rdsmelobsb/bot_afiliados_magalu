@@ -53,7 +53,7 @@ Eu fornecerei um [INPUT_DATA], que é uma string JSON representando um DataFrame
 * `url_afiliado`: O link de compra.
 
 **4. PROCESSO DE DECISÃO ESTRATÉGICA (THOUGHT_PROCESS):**
-Seu objetivo é identificar as 3 (TRÊS) "Oportunidades de Ouro". Você deve priorizar com base nesta hierarquia de decisão:
+Seu objetivo é identificar as 10 (DEZ) "Oportunidades de Ouro". Você deve priorizar com base nesta hierarquia de decisão:
 
 * **Filtro 1: Aderência ao Ticket (Peso 40%)**: Selecione produtos onde `preco_atual` esteja na faixa de R$ 35,00 a R$ 500,00. Este é o nosso "Sweet Spot" de R$ 350.
 * **Filtro 2: Percepção de Valor (Peso 35%)**: Priorize produtos com o MAIOR `percentual_desconto`. A escassez e a oportunidade (promoções) são os maiores gatilhos para o público "mar aberto".
@@ -61,7 +61,7 @@ Seu objetivo é identificar as 3 (TRÊS) "Oportunidades de Ouro". Você deve pri
 * **Filtro 4: Relevância (Qualificador)**: O produto deve ser Banal? NÃO. Deve ter apelo imediato para o nicho (Games, Geek, Tech). Um mouse gamer obscuro em promoção é MELHOR que um fone de ouvido genérico.
 
 **5. DIRETRIZ DE SAÍDA (OUTPUT):**
-Sua resposta deve ser um JSON ESTRITO, sem texto introdutório ou final. O JSON deve conter uma chave principal "oportunidades" que é um array de 3 objetos.
+Sua resposta deve ser um JSON ESTRITO, sem texto introdutório ou final. O JSON deve conter uma chave principal "oportunidades" que é um array de 10 objetos.
 
 **Cumpra este formato EXATAMENTE:**
 
@@ -93,19 +93,7 @@ Sua resposta deve ser um JSON ESTRITO, sem texto introdutório ou final. O JSON 
         "cta": "..."
       }
     },
-    {
-      "sku_selecionado": "SKU_DO_PRODUTO_3",
-      "nome_produto": "Nome do Produto 3",
-      "preco_atual": 39.90,
-      "percentual_desconto": 50,
-      "url_afiliado": "URL_AFILIADO_AQUI_3",
-      "razao_selecao": "...",
-      "copy_venda": {
-        "titulo": "...",
-        "corpo": "...",
-        "cta": "..."
-      }
-    }
+    // ... (mais 8 oportunidades seguindo o mesmo padrão)
   ]
 }
 
@@ -268,6 +256,7 @@ def gerar_json_para_ia(df):
 
 # --- 4. Funções da IA (Gemini) ---
 
+
 def gemini_fx(prompt):
     """
     Tenta gerar conteúdo usando uma lista de modelos Gemini em fallback.
@@ -386,7 +375,7 @@ class MandaEmail:
             return "<p>Erro ao formatar o corpo do e-mail.</p>"
 
     def enviar_email_oportunidades(self, oportunidades_dict, email_destinatario):
-        ASSUNTO = f'Alpha-Profit: Oportunidades de Ouro Detectadas! ({time.strftime("%d/%m/%Y")})'
+        ASSUNTO = f'Alpha-Profit: 10 Oportunidades de Ouro Detectadas! ({time.strftime("%d/%m/%Y")})'
 
         msg = EmailMessage()
         msg["Subject"] = ASSUNTO
@@ -409,7 +398,7 @@ class MandaEmail:
 <body>
     <div class="container">
         <p>Olá,</p>
-        <p>O "Alpha-Profit" AI Bot completou a varredura e análise. Foram identificadas as <strong>3 oportunidades de ouro</strong> com maior potencial de conversão com base em suas diretrizes:</p>
+        <p>O "Alpha-Profit" AI Bot completou a varredura e análise. Foram identificadas as <strong>10 oportunidades de ouro</strong> com maior potencial de conversão com base em suas diretrizes:</p>
 
         {oportunidades_html}
 
@@ -444,7 +433,7 @@ if __name__ == "__main__":
     URLS_BASE = [
         "https://www.magazinevoce.com.br/magazinedealz/informatica/l/in/",
         "https://www.magazinevoce.com.br/magazinedealz/games/l/ga/",
-        "https://www.magazinevoce.com.br/magazinedealz/casa-inteligente/l/ci/"
+        "https://www.magazinevoce.com.br/magazinedealz/casa-inteligente/l/ci/",
     ]
 
     all_dfs = []  # Lista para acumular DataFrames de TODAS as categorias e páginas
@@ -510,10 +499,9 @@ if __name__ == "__main__":
     logging.info("DataFrame completo salvo em 'produtos_extraidos.csv'")
 
     # --- Filtro Estratégico (Top 50 do TOTAL) ---
-  
 
     logging.info(
-        f"Aplicando filtro estratégico para selecionar os 30 melhores produtos para a IA..."
+        f"Aplicando filtro estratégico para selecionar os 50 melhores produtos para a IA..."
     )
 
     # 1. Cria uma coluna de prioridade para o "Sweet Spot" (R$ 35-500)
@@ -524,14 +512,14 @@ if __name__ == "__main__":
         by=["prioridade_sweet_spot", "percentual_desconto"], ascending=[False, False]
     )
 
-    # 3. Seleciona os 30 melhores (ou menos, se o total for menor)
+    # 3. Seleciona os 50 melhores (ou menos, se o total for menor)
     df_para_ia = df_ordenado_para_ia.head(50)
 
     logging.info(f"Total de produtos após filtro para IA: {len(df_para_ia)}")
 
     # Remove a coluna auxiliar antes de enviar para a IA
     df_para_ia = df_para_ia.drop(columns=["prioridade_sweet_spot"])
-    
+
     # Passa o DataFrame filtrado e ordenado para a função de geração de JSON
     json_input_data = gerar_json_para_ia(df_para_ia)
 
@@ -541,7 +529,7 @@ if __name__ == "__main__":
 
     with open("insumo_ia.json", "w", encoding="utf-8") as f:
         f.write(json_input_data)
-    logging.info("Insumo JSON (top 30) salvo em 'insumo_ia.json'")
+    logging.info("Insumo JSON (top 50) salvo em 'insumo_ia.json'")
 
     # --- ETAPA 3: CHAMADA DA IA (ALPHA-PROFIT) ---
 
@@ -556,7 +544,7 @@ if __name__ == "__main__":
 
     logging.info("\n" + "=" * 25 + " CHAMANDO ALPHA-PROFIT (GEMINI) " + "=" * 25)
     logging.info(
-        "Analisando dados (Top 50) para encontrar as 3 'Oportunidades de Ouro'..."
+        "Analisando dados (Top 50) para encontrar as 10 'Oportunidades de Ouro'..."
     )
 
     api_response = gemini_fx(final_prompt)
@@ -616,6 +604,3 @@ if __name__ == "__main__":
         logging.warning("Variáveis 'EMAIL_DISPARO' e 'EMAIL_SENHA' não definidas.")
 
         logging.warning("O e-mail de alerta NÃO será enviado.")
-
-
-
