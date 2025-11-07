@@ -55,7 +55,7 @@ Eu fornecerei um [INPUT_DATA], que é uma string JSON representando um DataFrame
 **4. PROCESSO DE DECISÃO ESTRATÉGICA (THOUGHT_PROCESS):**
 Seu objetivo é identificar as 3 (TRÊS) "Oportunidades de Ouro". Você deve priorizar com base nesta hierarquia de decisão:
 
-* **Filtro 1: Aderência ao Ticket (Peso 40%)**: Selecione produtos onde `preco_atual` esteja na faixa de R$ 35,00 a R$ 60,00. Este é o nosso "Sweet Spot" de R$ 50.
+* **Filtro 1: Aderência ao Ticket (Peso 40%)**: Selecione produtos onde `preco_atual` esteja na faixa de R$ 35,00 a R$ 500,00. Este é o nosso "Sweet Spot" de R$ 350.
 * **Filtro 2: Percepção de Valor (Peso 35%)**: Priorize produtos com o MAIOR `percentual_desconto`. A escassez e a oportunidade (promoções) são os maiores gatilhos para o público "mar aberto".
 * **Filtro 3: Potencial de Lucro (Peso 25%)**: Se `comissao_percent` estiver disponível, use-o como um desempate de alta prioridade. Maximize nosso R$ (Receita = preco_atual * comissao_percent).
 * **Filtro 4: Relevância (Qualificador)**: O produto deve ser Banal? NÃO. Deve ter apelo imediato para o nicho (Games, Geek, Tech). Um mouse gamer obscuro em promoção é MELHOR que um fone de ouvido genérico.
@@ -268,11 +268,6 @@ def gerar_json_para_ia(df):
 
 # --- 4. Funções da IA (Gemini) ---
 
-MODELOS_DISPONIVEIS = [
-    "gemini-2.5-pro",
-]
-
-
 def gemini_fx(prompt):
     """
     Tenta gerar conteúdo usando uma lista de modelos Gemini em fallback.
@@ -445,8 +440,6 @@ class MandaEmail:
 if __name__ == "__main__":
 
     # --- ETAPA 1: SCRAPING ---
-
-    # --- INÍCIO DA ALTERAÇÃO SOLICITADA ---
     # Lista de URLs base para raspar (Nicho: Games, Geek, Tech)
     URLS_BASE = [
         "https://www.magazinevoce.com.br/magazinedealz/informatica/l/in/",
@@ -498,8 +491,6 @@ if __name__ == "__main__":
             page_to_scrape += 1
             time.sleep(1)  # Pausa de 1 segundo (boa prática)
 
-    # --- FIM DA ALTERAÇÃO SOLICITADA ---
-
     if not all_dfs:
         logging.error(
             "Nenhum produto foi extraído de nenhuma página/categoria. Encerrando."
@@ -518,15 +509,14 @@ if __name__ == "__main__":
     df_produtos.to_csv("produtos_extraidos.csv", index=False, encoding="utf-8-sig")
     logging.info("DataFrame completo salvo em 'produtos_extraidos.csv'")
 
-    # --- Filtro Estratégico (Top 30 do TOTAL) ---
-    # Filtra e prioriza os 30 produtos mais relevantes para a IA
-    # do DataFrame *combinado*
+    # --- Filtro Estratégico (Top 50 do TOTAL) ---
+  
 
     logging.info(
         f"Aplicando filtro estratégico para selecionar os 30 melhores produtos para a IA..."
     )
 
-    # 1. Cria uma coluna de prioridade para o "Sweet Spot" (R$ 35-60)
+    # 1. Cria uma coluna de prioridade para o "Sweet Spot" (R$ 35-500)
     df_produtos["prioridade_sweet_spot"] = df_produtos["preco_atual"].between(35, 500)
 
     # 2. Ordena pela prioridade (True vem antes de False) e depois pelo maior desconto
@@ -535,14 +525,13 @@ if __name__ == "__main__":
     )
 
     # 3. Seleciona os 30 melhores (ou menos, se o total for menor)
-    df_para_ia = df_ordenado_para_ia.head(100)
+    df_para_ia = df_ordenado_para_ia.head(50)
 
     logging.info(f"Total de produtos após filtro para IA: {len(df_para_ia)}")
 
     # Remove a coluna auxiliar antes de enviar para a IA
     df_para_ia = df_para_ia.drop(columns=["prioridade_sweet_spot"])
-    # --- Fim do Filtro ---
-
+    
     # Passa o DataFrame filtrado e ordenado para a função de geração de JSON
     json_input_data = gerar_json_para_ia(df_para_ia)
 
@@ -567,7 +556,7 @@ if __name__ == "__main__":
 
     logging.info("\n" + "=" * 25 + " CHAMANDO ALPHA-PROFIT (GEMINI) " + "=" * 25)
     logging.info(
-        "Analisando dados (Top 30) para encontrar as 3 'Oportunidades de Ouro'..."
+        "Analisando dados (Top 50) para encontrar as 3 'Oportunidades de Ouro'..."
     )
 
     api_response = gemini_fx(final_prompt)
@@ -627,5 +616,6 @@ if __name__ == "__main__":
         logging.warning("Variáveis 'EMAIL_DISPARO' e 'EMAIL_SENHA' não definidas.")
 
         logging.warning("O e-mail de alerta NÃO será enviado.")
+
 
 
