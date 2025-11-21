@@ -263,7 +263,7 @@ def gemini_fx(prompt):
     """
     result = None
 
-    modelos_a_tentar = ["gemini-2.5-pro"]
+    modelos_a_tentar = ["gemini-3-pro-preview"]
 
     for modelo_nome in modelos_a_tentar:
         try:
@@ -604,3 +604,4 @@ if __name__ == "__main__":
         logging.warning("Variáveis 'EMAIL_DISPARO' e 'EMAIL_SENHA' não definidas.")
 
         logging.warning("O e-mail de alerta NÃO será enviado.")
+
