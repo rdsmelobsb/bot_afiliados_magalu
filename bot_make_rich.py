@@ -20,9 +20,8 @@ logging.basicConfig(
 try:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        logging.error("A variável de ambiente 'GOOGLE_API_KEY' não foi definida.")
         logging.error("Defina-a antes de rodar: export GOOGLE_API_KEY='SUA_CHAVE'")
-        sys.exit(1)  # Encerra o script se a chave não estiver presente
+        sys.exit(1)  
     genai.configure(api_key=api_key)
     logging.info("API do Gemini configurada com sucesso.")
 except Exception as e:
@@ -36,7 +35,7 @@ ALPHA_PROFIT_SYSTEM_PROMPT = """
 ## DIRETRIZ DE SISTEMA: PROJETO "ALPHA-PROFIT"
 
 **1. IDENTIDADE (ROLE):**
-Você é o "Alpha-Profit", um C-Level AI Strategist especializado em e-commerce de afiliados (Nicho: Games, Geek, Tech) com um único KPI: maximizar a Receita Bruta de Afiliados. Sua meta de curto prazo é gerar R$ 10.000.
+Você é o "Alpha-Profit", um C-Level AI Strategist especializado em e-commerce de afiliados (Nicho: Games, Geek, Tech, smart house e música) com um único KPI: maximizar a Receita Bruta de Afiliados. Sua meta de curto prazo é gerar R$ 10.000/semana.
 
 **2. CONTEXTO OPERACIONAL (CONTEXT):**
 Analisamos um catálogo de produtos de afiliados em tempo real. O público-alvo é "mar aberto" (amplo), +18. O "Ponto Doce" (Sweet Spot) de conversão por impulso é um Ticket Médio de R$ 500,00.
@@ -55,7 +54,7 @@ Eu fornecerei um [INPUT_DATA], que é uma string JSON representando um DataFrame
 **4. PROCESSO DE DECISÃO ESTRATÉGICA (THOUGHT_PROCESS):**
 Seu objetivo é identificar as 10 (DEZ) "Oportunidades de Ouro". Você deve priorizar com base nesta hierarquia de decisão:
 
-* **Filtro 1: Aderência ao Ticket (Peso 40%)**: Selecione produtos onde `preco_atual` esteja na faixa de R$ 35,00 a R$ 500,00. Este é o nosso "Sweet Spot" de R$ 350.
+* **Filtro 1: Aderência ao Ticket (Peso 40%)**: Selecione produtos onde `preco_atual` esteja na faixa de R$ 35,00 a R$ 500,00. Este é o nosso "Sweet Spot" de R$ 500.
 * **Filtro 2: Percepção de Valor (Peso 35%)**: Priorize produtos com o MAIOR `percentual_desconto`. A escassez e a oportunidade (promoções) são os maiores gatilhos para o público "mar aberto".
 * **Filtro 3: Potencial de Lucro (Peso 25%)**: Se `comissao_percent` estiver disponível, use-o como um desempate de alta prioridade. Maximize nosso R$ (Receita = preco_atual * comissao_percent).
 * **Filtro 4: Relevância (Qualificador)**: O produto deve ser Banal? NÃO. Deve ter apelo imediato para o nicho (Games, Geek, Tech). Um mouse gamer obscuro em promoção é MELHOR que um fone de ouvido genérico.
@@ -434,6 +433,7 @@ if __name__ == "__main__":
         "https://www.magazinevoce.com.br/magazinedealz/informatica/l/in/",
         "https://www.magazinevoce.com.br/magazinedealz/games/l/ga/",
         "https://www.magazinevoce.com.br/magazinedealz/casa-inteligente/l/ci/",
+        "https://www.magazinevoce.com.br/magazinedealz/busca/lp/",
     ]
 
     all_dfs = []  # Lista para acumular DataFrames de TODAS as categorias e páginas
@@ -584,8 +584,10 @@ if __name__ == "__main__":
 
             # Verifica se a IA retornou um erro
             if "erro" in oportunidades_dict:
-                logging.error(
-                    f"A IA retornou um erro, e-mail não será enviado. Erro: {oportunidades_dict['erro']}"
+                mailer = MandaEmail(email_disparo=EMAIL_DISPARO, senha=EMAIL_SENHA)
+                mailer.enviar_email_oportunidades(
+                    oportunidades_dict=oportunidades_dict,
+                    email_destinatario=EMAIL_DESTINATARIO,
                 )
             else:
                 # Instancia e envia o e-mail
@@ -604,4 +606,5 @@ if __name__ == "__main__":
         logging.warning("Variáveis 'EMAIL_DISPARO' e 'EMAIL_SENHA' não definidas.")
 
         logging.warning("O e-mail de alerta NÃO será enviado.")
+
 
