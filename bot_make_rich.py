@@ -217,9 +217,9 @@ def gemini_fx(dados_json):
     try:
         logging.info("Iniciando a análise braba com o modelo Gemini...")
         
-        # ATUALIZAÇÃO: Inserindo o modelo exato que a API nos listou!
+        # Modelo atualizado pro Flash (super rápido e de boa com os limites gratuitos)
         model = genai.GenerativeModel(
-            model_name="gemini-3.1-pro-preview", 
+            model_name="gemini-2.5-flash", 
             system_instruction=ALPHA_PROFIT_SYSTEM_PROMPT,
             generation_config={
                 "response_mime_type": "application/json",
@@ -244,7 +244,8 @@ def gemini_fx(dados_json):
 
     except Exception as e:
         logging.error(f"Putz, a IA falhou: {e}")
-        return f'{{"erro": "A análise da IA falhou", "motivo": "{str(e)}"}}'
+        # Simplifiquei a resposta de erro pra garantir que seja um JSON limpo
+        return f'{{"erro": "A análise da IA falhou", "motivo": "Erro interno na chamada do modelo."}}'
 
 
 # --- 5. Funções de E-mail (Procedural) ---
@@ -410,7 +411,9 @@ if __name__ == "__main__":
         by=["prioridade_sweet_spot", "percentual_desconto"], ascending=[False, False]
     )
     
-    df_para_ia = df_ordenado_para_ia.head(250)
+    # A MÁGICA TÁ AQUI, VÉI! Reduzi de 250 pra 80.
+    # A IA não vai mais precisar pensar até o cérebro derreter e estourar o tempo.
+    df_para_ia = df_ordenado_para_ia.head(80)
 
     logging.info(f"Total de produtos que vão pra IA analisar: {len(df_para_ia)}")
 
@@ -454,7 +457,7 @@ if __name__ == "__main__":
             oportunidades_dict = json.loads(json_final_output)
             
             if "erro" in oportunidades_dict:
-                 logging.error(f"A IA retornou um erro interno: {oportunidades_dict['erro']}")
+                 logging.error(f"A IA retornou um erro interno: {oportunidades_dict['motivo']}")
             else:
                 enviar_email_oportunidades(
                     email_disparo=EMAIL_DISPARO,
@@ -462,8 +465,9 @@ if __name__ == "__main__":
                     email_destinatario=EMAIL_DESTINATARIO,
                     oportunidades_dict=oportunidades_dict
                 )
-        except json.JSONDecodeError:
-            logging.error("Não rolou decodificar o JSON final pro e-mail, mesmo forçando o modo JSON.")
+        except json.JSONDecodeError as e:
+            logging.error(f"Não rolou decodificar o JSON final pro e-mail. Motivo: {e}")
+            logging.error(f"Conteúdo que falhou: {json_final_output}")
         except Exception as e:
             logging.error(f"Falha geral ao enviar e-mail: {e}")
     else:
