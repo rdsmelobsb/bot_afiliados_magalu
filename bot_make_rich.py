@@ -382,12 +382,13 @@ if __name__ == "__main__":
             )
 
             # 2. Publica nas Redes Sociais!
-            logging.info("\n=== PUBLICANDO NA META (FACEBOOK) ===")
-            publicar_no_facebook_page(
-                oportunidades_dict=oportunidades_dict,
-                page_id=os.getenv("META_PAGE_ID"),        # <--- Novo segredo
-                access_token=os.getenv("META_ACCESS_TOKEN") # <--- Novo segredo
-            )
+            #logging.info("\n=== PUBLICANDO NA META (FACEBOOK) ===")
+            #publicar_no_facebook_page(
+                #oportunidades_dict=oportunidades_dict,
+               # page_id=os.getenv("META_PAGE_ID"),        # <--- Novo segredo
+               # access_token=os.getenv("META_ACCESS_TOKEN") # <--- Novo segredo
+           # )
 
     except json.JSONDecodeError:
         logging.error("Falha ao ler JSON final.")
+
