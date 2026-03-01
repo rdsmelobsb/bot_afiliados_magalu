@@ -7,8 +7,8 @@ import time
 import logging
 import os
 import google.generativeai as genai
-import smtplib  # Importado para o e-mail
-from email.message import EmailMessage  # Importado para o e-mail
+import smtplib
+from email.message import EmailMessage
 
 # --- 1. Configuração do Logging e API ---
 
@@ -213,19 +213,17 @@ def gerar_json_para_ia(df):
 def gemini_fx(dados_json):
     """
     Gera conteúdo usando a IA do Gemini usando System Instructions e Modo JSON.
-    Isso garante que a IA entenda seu papel e sempre devolva um JSON válido.
     """
     try:
         logging.info("Iniciando a análise braba com o modelo Gemini...")
         
-        # Aqui a mágica acontece: passamos a persona como instrução de sistema
-        # e forçamos a saída a ser 100% JSON nativo!
+        # ATUALIZAÇÃO: Inserindo o modelo exato que a API nos listou!
         model = genai.GenerativeModel(
-            model_name="gemini-1.5-pro", # Usando a versão recomendada para instruções avançadas
+            model_name="gemini-3.1-pro-preview", 
             system_instruction=ALPHA_PROFIT_SYSTEM_PROMPT,
             generation_config={
                 "response_mime_type": "application/json",
-                "temperature": 0.3 # Temperatura baixinha pra IA focar nos dados e não inventar moda
+                "temperature": 0.3
             }
         )
         
@@ -242,7 +240,7 @@ def gemini_fx(dados_json):
         )
         
         logging.info("Análise concluída com sucesso! Tá na mão.")
-        return result.text # Como ativamos o mime_type, isso aqui JÁ É o JSON perfeito!
+        return result.text 
 
     except Exception as e:
         logging.error(f"Putz, a IA falhou: {e}")
@@ -297,7 +295,7 @@ def enviar_email_oportunidades(email_disparo, senha, email_destinatario, oportun
     <br><br>
     <div style="border-top: 1px solid #ddd; padding-top: 20px;">
       <p style="font-style: italic; color: #555;">Alpha-Profit AI Bot</p>
-      <img src="https://ci3.googleusercontent.com/meips/ADKq_NZNnO1Uv8e0QiAHUG--ckV2LDa1U2j3GOLJs8Z-yXbEGFVoEXuTza7ZsxBT3ViSHgUgX8yrpTHkrTnujVq5Kp94rWhDRryaeSIYQJv4ooOR4a8fSp8SAAw=s0-d-e1-ft#https://novasb.com.br/wp-content/uploads/assinatura/RAFAELMELO.png" alt="assinatura" style="width: 150px; height: auto;">
+      <img src="https://ssl.gstatic.com/ui/v1/icons/mail/rfr/logo_gmail_lockup_default_1x_r5.png" alt="assinatura" style="width: 100px; height: auto;">
     </div>
     """
 
@@ -391,7 +389,7 @@ if __name__ == "__main__":
                 logging.warning(f"Não rolou extrair dados da página {page_to_scrape} ou a página tava vazia.")
 
             page_to_scrape += 1
-            time.sleep(1) # Pausa amigável pro servidor
+            time.sleep(1) 
 
     if not all_dfs:
         logging.error("Nenhum produto extraído, véi. O script vai parar por aqui.")
@@ -412,7 +410,6 @@ if __name__ == "__main__":
         by=["prioridade_sweet_spot", "percentual_desconto"], ascending=[False, False]
     )
     
-    # MUDANÇA BRABA AQUI: De 50 para 250 produtos! A IA vai ter muito mais opção pra escolher a dedo.
     df_para_ia = df_ordenado_para_ia.head(250)
 
     logging.info(f"Total de produtos que vão pra IA analisar: {len(df_para_ia)}")
@@ -432,7 +429,6 @@ if __name__ == "__main__":
     logging.info("\n" + "=" * 25 + " CHAMANDO ALPHA-PROFIT (GEMINI) " + "=" * 25)
     logging.info("Analisando os dados pra pescar as 10 'Oportunidades de Ouro'...")
 
-    # Chamada muito mais limpa. Só passamos os dados, as regras já estão configuradas lá em cima.
     json_final_output = gemini_fx(json_input_data)
 
     # --- ETAPA 4: RESULTADO FINAL E ARQUIVOS ---
@@ -455,7 +451,6 @@ if __name__ == "__main__":
 
     if EMAIL_DISPARO and EMAIL_SENHA:
         try:
-            # Como a saída já é garantida como JSON nativo, carrega direto pra um dicionário
             oportunidades_dict = json.loads(json_final_output)
             
             if "erro" in oportunidades_dict:
