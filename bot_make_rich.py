@@ -352,6 +352,11 @@ if __name__ == "__main__":
         sys.exit(0)
 
     df_produtos = pd.concat(all_dfs, ignore_index=True)
+    
+    # 🟢 NOVO: Salvando o CSV para o GitHub Actions encontrar
+    df_produtos.to_csv("produtos_extraidos.csv", index=False, encoding="utf-8")
+    logging.info("Arquivo 'produtos_extraidos.csv' salvo localmente com sucesso.")
+
     df_produtos["prioridade_sweet_spot"] = df_produtos["preco_atual"].between(35, 500)
     df_ordenado_para_ia = df_produtos.sort_values(
         by=["prioridade_sweet_spot", "percentual_desconto"], ascending=[False, False]
@@ -362,9 +367,19 @@ if __name__ == "__main__":
 
     if not json_input_data:
         sys.exit(0)
+        
+    # 🟢 NOVO: Salvando o Insumo da IA para o GitHub Actions encontrar
+    with open("insumo_ia.json", "w", encoding="utf-8") as file:
+        file.write(json_input_data)
+    logging.info("Arquivo 'insumo_ia.json' salvo localmente com sucesso.")
 
     logging.info("\n=== CHAMANDO ALPHA-PROFIT (GEMINI) ===")
     json_final_output = gemini_fx(json_input_data)
+
+    # 🟢 NOVO: Salvando as Oportunidades Finais da IA para o GitHub Actions encontrar
+    with open("oportunidades_alpha_profit.json", "w", encoding="utf-8") as file:
+        file.write(json_final_output)
+    logging.info("Arquivo 'oportunidades_alpha_profit.json' salvo localmente com sucesso.")
 
     try:
         oportunidades_dict = json.loads(json_final_output)
@@ -391,4 +406,3 @@ if __name__ == "__main__":
 
     except json.JSONDecodeError:
         logging.error("Falha ao ler JSON final.")
-
