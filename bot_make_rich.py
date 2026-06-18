@@ -305,7 +305,7 @@ if __name__ == "__main__":
             enviar_email_oportunidades(
                 email_disparo=os.getenv("EMAIL_USER"),
                 senha=os.getenv("EMAIL_PASSWORD"),
-                email_destinatario="rafael.melo@novagencia.com",
+                email_destinatario="rsouza.melo@gmail.com",
                 oportunidades_dict=oportunidades_dict
             )
     except Exception as e:
