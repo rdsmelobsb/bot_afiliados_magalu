@@ -98,7 +98,6 @@ def extrair_dados_magalu_live(url):
         "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
     }
 
-    # 🟢 INSERÇÃO: Filtro de ruído para evitar produtos de baixo valor/descontos falsos
     termos_banidos = ['cabo', 'pelicula', 'capinha', 'adaptador', 'suporte', 'conector', 'carregador', 'capa para']
 
     try:
@@ -132,7 +131,6 @@ def extrair_dados_magalu_live(url):
         try:
             nome = product.get("title", "")
             
-            # 🟢 INSERÇÃO: Pula produtos irrelevantes
             if any(termo in nome.lower() for termo in termos_banidos):
                 continue
 
@@ -152,7 +150,6 @@ def extrair_dados_magalu_live(url):
                     ((preco_antigo - preco_atual) / preco_antigo) * 100, 2
                 )
             
-            # 🟢 INSERÇÃO: Filtro de sanidade (descontos > 85% em tech costumam ser erro)
             if percentual_desconto > 85:
                 continue
 
@@ -186,7 +183,7 @@ def gerar_json_para_ia(df):
     return df.to_json(orient="records", force_ascii=False, indent=2)
 
 
-# --- 4. Funções da IA (Gemini - MANTIDO gemini-2.5-flash) ---
+# --- 4. Funções da IA (Gemini) ---
 
 def gemini_fx(dados_json):
     try:
@@ -214,7 +211,7 @@ def gemini_fx(dados_json):
         return f'{{"erro": "A análise da IA falhou", "motivo": "{e}"}}'
 
 
-# --- 5. Funções de E-mail (MANTIDO) ---
+# --- 5. Funções de E-mail ---
 
 def formatar_oportunidades_html(oportunidades_dict):
     html_out = ""
@@ -237,8 +234,8 @@ def formatar_oportunidades_html(oportunidades_dict):
     except Exception:
         return "<p>Erro na formatação.</p>"
 
-
-def enviar_email_oportunidades(email_disparo, senha, email_destinatario, oportunidades_dict, host="smtp.gmail.com", porta=587):
+# 🟢 INSERÇÃO/MODIFICAÇÃO: A função agora recebe o dataframe df_todos_produtos
+def enviar_email_oportunidades(email_disparo, senha, email_destinatario, oportunidades_dict, df_todos_produtos=None, host="smtp.gmail.com", porta=587):
     if not email_disparo or not senha:
         logging.warning("Credenciais de e-mail ausentes. Pulando envio.")
         return
@@ -252,6 +249,21 @@ def enviar_email_oportunidades(email_disparo, senha, email_destinatario, oportun
     mensagem_html = f"<html><body><h2>Alpha-Profit AI Bot</h2>{oportunidades_html}</body></html>"
     msg.set_content(mensagem_html, subtype="html")
 
+    # 🟢 INSERÇÃO: Converte o DF para CSV e anexa ao e-mail
+    if df_todos_produtos is not None and not df_todos_produtos.empty:
+        try:
+            # Transforma em string CSV (sep=';' e utf-8-sig resolvem bugs de acento e colunas no Excel BR)
+            csv_str = df_todos_produtos.to_csv(index=False, sep=';', encoding='utf-8-sig')
+            msg.add_attachment(
+                csv_str.encode('utf-8-sig'), 
+                maintype='text', 
+                subtype='csv', 
+                filename=f'todos_produtos_raspados_{time.strftime("%Y%m%d")}.csv'
+            )
+            logging.info("CSV com todos os produtos anexado ao e-mail.")
+        except Exception as e:
+            logging.error(f"Erro ao tentar anexar o CSV: {e}")
+
     try:
         with smtplib.SMTP(host, porta) as server:
             server.starttls()
@@ -262,7 +274,7 @@ def enviar_email_oportunidades(email_disparo, senha, email_destinatario, oportun
         logging.error(f"Erro no envio de e-mail: {e}")
 
 
-# --- 7. Execução Principal (Com Ordenação Inteligente de BI) ---
+# --- 7. Execução Principal ---
 
 if __name__ == "__main__":
 
@@ -286,12 +298,9 @@ if __name__ == "__main__":
 
     df_produtos = pd.concat(all_dfs, ignore_index=True)
     
-    # 🟢 INSERÇÃO: Lógica de BI para priorizar o que é bom de verdade
-    # Criamos um score: Peso maior para desconto, mas bônus se estiver no Sweet Spot (35-500)
     df_produtos["score_qualidade"] = (df_produtos["percentual_desconto"] * 0.6) + \
                                      (df_produtos["preco_atual"].between(35, 500) * 40)
     
-    # Ordenamos pelo Score e enviamos os 100 melhores candidatos para a IA refinar
     df_ordenado_para_ia = df_produtos.sort_values(by="score_qualidade", ascending=False).head(100)
     
     json_input_data = gerar_json_para_ia(df_ordenado_para_ia.drop(columns=["score_qualidade"]))
@@ -306,7 +315,8 @@ if __name__ == "__main__":
                 email_disparo=os.getenv("EMAIL_USER"),
                 senha=os.getenv("EMAIL_PASSWORD"),
                 email_destinatario="rsouza.melo18@gmail.com",
-                oportunidades_dict=oportunidades_dict
+                oportunidades_dict=oportunidades_dict,
+                df_todos_produtos=df_produtos # 🟢 INSERÇÃO: Passando o DataFrame completo aqui!
             )
     except Exception as e:
         logging.error(f"Erro no processamento final: {e}")
