@@ -9,6 +9,7 @@ import os
 import google.generativeai as genai
 import smtplib
 from email.message import EmailMessage
+import csv # 🟢 INSERÇÃO: Import para controle rigoroso do RFC 4180
 
 # --- 1. Configuração do Logging e API ---
 
@@ -89,7 +90,7 @@ A copy **NÃO** é descritiva; ela é **PERSUASIVA**.
 """
 
 
-# --- 3. Funções do Scraper (Ajustado com Filtro de Termos) ---
+# --- 3. Funções do Scraper ---
 
 def extrair_dados_magalu_live(url):
     headers = {
@@ -234,7 +235,7 @@ def formatar_oportunidades_html(oportunidades_dict):
     except Exception:
         return "<p>Erro na formatação.</p>"
 
-# 🟢 INSERÇÃO/MODIFICAÇÃO: A função agora recebe o dataframe df_todos_produtos
+
 def enviar_email_oportunidades(email_disparo, senha, email_destinatario, oportunidades_dict, df_todos_produtos=None, host="smtp.gmail.com", porta=587):
     if not email_disparo or not senha:
         logging.warning("Credenciais de e-mail ausentes. Pulando envio.")
@@ -249,18 +250,24 @@ def enviar_email_oportunidades(email_disparo, senha, email_destinatario, oportun
     mensagem_html = f"<html><body><h2>Alpha-Profit AI Bot</h2>{oportunidades_html}</body></html>"
     msg.set_content(mensagem_html, subtype="html")
 
-    # 🟢 INSERÇÃO: Converte o DF para CSV e anexa ao e-mail
     if df_todos_produtos is not None and not df_todos_produtos.empty:
         try:
-            # Transforma em string CSV (sep=';' e utf-8-sig resolvem bugs de acento e colunas no Excel BR)
-            csv_str = df_todos_produtos.to_csv(index=False, sep=';', encoding='utf-8-sig')
+            # 🟢 INSERÇÃO DA CORREÇÃO: Aplicado quoting e escape conforme RFC 4180
+            csv_str = df_todos_produtos.to_csv(
+                index=False, 
+                sep=';', 
+                encoding='utf-8-sig',
+                quoting=csv.QUOTE_ALL,   # Envolve todos os campos em aspas
+                doublequote=True         # Escapa aspas duplas internas (ex: 27" vira "27""")
+            )
+            
             msg.add_attachment(
                 csv_str.encode('utf-8-sig'), 
                 maintype='text', 
                 subtype='csv', 
                 filename=f'todos_produtos_raspados_{time.strftime("%Y%m%d")}.csv'
             )
-            logging.info("CSV com todos os produtos anexado ao e-mail.")
+            logging.info("CSV com todos os produtos anexado ao e-mail (Seguro contra aspas internas).")
         except Exception as e:
             logging.error(f"Erro ao tentar anexar o CSV: {e}")
 
@@ -316,7 +323,7 @@ if __name__ == "__main__":
                 senha=os.getenv("EMAIL_PASSWORD"),
                 email_destinatario="rsouza.melo18@gmail.com",
                 oportunidades_dict=oportunidades_dict,
-                df_todos_produtos=df_produtos # 🟢 INSERÇÃO: Passando o DataFrame completo aqui!
+                df_todos_produtos=df_produtos
             )
     except Exception as e:
         logging.error(f"Erro no processamento final: {e}")
