@@ -9,7 +9,7 @@ import os
 import google.generativeai as genai
 import smtplib
 from email.message import EmailMessage
-import csv # 🟢 INSERÇÃO: Import para controle rigoroso do RFC 4180
+import csv 
 
 # --- 1. Configuração do Logging e API ---
 
@@ -29,8 +29,7 @@ except Exception as e:
     sys.exit(1)
 
 
-# --- 2. Diretriz de Sistema (Prompt da IA - MANTIDO) ---
-
+# --- 2. Prompt de Comando da IA ---
 ALPHA_PROFIT_SYSTEM_PROMPT = """
 ## DIRETRIZ DE SISTEMA: PROJETO "ALPHA-PROFIT"
 
@@ -89,10 +88,13 @@ A copy **NÃO** é descritiva; ela é **PERSUASIVA**.
 * **Tom:** Direto, entusiasmado, ligeiramente urgente. "Geek para Geek", mas sem jargões que exijam um manual.
 """
 
-
-# --- 3. Funções do Scraper ---
+# --- 3. Funções de Scraping e Processamento ---
 
 def extrair_dados_magalu_live(url):
+    """
+    Entra na URL fornecida, raspa os produtos da página, 
+    calcula descontos e descobre o total de páginas disponíveis.
+    """
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
@@ -184,13 +186,11 @@ def gerar_json_para_ia(df):
     return df.to_json(orient="records", force_ascii=False, indent=2)
 
 
-# --- 4. Funções da IA (Gemini) ---
-
 def gemini_fx(dados_json):
     try:
         logging.info("Iniciando a análise braba com o modelo Gemini...")
         model = genai.GenerativeModel(
-            model_name="gemini-2.5-flash", 
+            model_name="gemini-2.5-pro", 
             system_instruction=ALPHA_PROFIT_SYSTEM_PROMPT,
             generation_config={
                 "response_mime_type": "application/json",
@@ -211,8 +211,6 @@ def gemini_fx(dados_json):
         logging.error(f"Putz, a IA falhou: {e}")
         return f'{{"erro": "A análise da IA falhou", "motivo": "{e}"}}'
 
-
-# --- 5. Funções de E-mail ---
 
 def formatar_oportunidades_html(oportunidades_dict):
     html_out = ""
@@ -252,13 +250,12 @@ def enviar_email_oportunidades(email_disparo, senha, email_destinatario, oportun
 
     if df_todos_produtos is not None and not df_todos_produtos.empty:
         try:
-            # 🟢 INSERÇÃO DA CORREÇÃO: Aplicado quoting e escape conforme RFC 4180
             csv_str = df_todos_produtos.to_csv(
                 index=False, 
                 sep=';', 
                 encoding='utf-8-sig',
-                quoting=csv.QUOTE_ALL,   # Envolve todos os campos em aspas
-                doublequote=True         # Escapa aspas duplas internas (ex: 27" vira "27""")
+                quoting=csv.QUOTE_ALL,   
+                doublequote=True         
             )
             
             msg.add_attachment(
@@ -267,7 +264,7 @@ def enviar_email_oportunidades(email_disparo, senha, email_destinatario, oportun
                 subtype='csv', 
                 filename=f'todos_produtos_raspados_{time.strftime("%Y%m%d")}.csv'
             )
-            logging.info("CSV com todos os produtos anexado ao e-mail (Seguro contra aspas internas).")
+            logging.info(f"CSV com {len(df_todos_produtos)} produtos anexado ao e-mail!")
         except Exception as e:
             logging.error(f"Erro ao tentar anexar o CSV: {e}")
 
@@ -281,7 +278,7 @@ def enviar_email_oportunidades(email_disparo, senha, email_destinatario, oportun
         logging.error(f"Erro no envio de e-mail: {e}")
 
 
-# --- 7. Execução Principal ---
+# --- 4. O Maestro da Orquestra (Bloco Principal Modificado) ---
 
 if __name__ == "__main__":
 
@@ -292,19 +289,48 @@ if __name__ == "__main__":
     ]
 
     all_dfs = []  
-    logging.info("Iniciando scraping...")
+    logging.info("Iniciando scraping turbinado (agora lendo múltiplas páginas)...")
 
+    # NOVA LÓGICA DE PAGINAÇÃO:
     for url_base in URLS_BASE:
-        df_pagina, _ = extrair_dados_magalu_live(url_base)
+        logging.info(f"Vasculhando a vitrine principal: {url_base}")
+        
+        # 1. Busca a primeira página e descobre o total de páginas existentes
+        df_pagina, total_pages = extrair_dados_magalu_live(url_base)
+        
         if df_pagina is not None and not df_pagina.empty:
             all_dfs.append(df_pagina) 
 
+        # 2. Se houver mais de uma página, vamos visitá-las!
+        if total_pages > 1:
+            # Dica: Limitamos a no máximo 5 páginas por categoria para evitar bloqueios 
+            # da loja e para o programa não demorar uma eternidade.
+            limite_paginas = min(total_pages, 5) 
+            
+            # Cria o laço da página 2 até o limite estabelecido
+            for pagina in range(2, limite_paginas + 1):
+                # Adiciona o "?page=X" na URL, que é o padrão de paginação de e-commerces
+                url_paginada = f"{url_base}?page={pagina}"
+                logging.info(f"Buscando página {pagina} de {limite_paginas}...")
+                
+                df_extra, _ = extrair_dados_magalu_live(url_paginada)
+                
+                if df_extra is not None and not df_extra.empty:
+                    all_dfs.append(df_extra)
+                
+                # Pausa estratégica de 2 segundos. Sem isso, a loja bloqueia nosso robô!
+                time.sleep(2)
+
+    # Verifica se pegou alguma coisa
     if not all_dfs:
         logging.error("Nenhum produto extraído.")
         sys.exit(0)
 
+    # Junta todas as tabelas raspadas em uma só super tabela
     df_produtos = pd.concat(all_dfs, ignore_index=True)
+    logging.info(f"Total de produtos raspados após paginação: {len(df_produtos)} itens!")
     
+    # Prepara o Top 100 para a Inteligência Artificial não se perder com excesso de dados
     df_produtos["score_qualidade"] = (df_produtos["percentual_desconto"] * 0.6) + \
                                      (df_produtos["preco_atual"].between(35, 500) * 40)
     
@@ -323,7 +349,7 @@ if __name__ == "__main__":
                 senha=os.getenv("EMAIL_PASSWORD"),
                 email_destinatario="rsouza.melo18@gmail.com",
                 oportunidades_dict=oportunidades_dict,
-                df_todos_produtos=df_produtos
+                df_todos_produtos=df_produtos # Aqui vai a nossa super tabela completa pro CSV!
             )
     except Exception as e:
         logging.error(f"Erro no processamento final: {e}")
