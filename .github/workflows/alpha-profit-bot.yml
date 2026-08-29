@@ -3,11 +3,8 @@
 name: 'Alpha-Profit: Execução Diária'
 
 on:
-  # Permite que você rode este workflow manualmente pela aba "Actions"
-  workflow_dispatch:
 
-  # Roda todos os dias às 09:30 (Horário de Brasília / UTC-3)
-  # 09:30 BRT = 12:30 UTC
+  workflow_dispatch:
   schedule:
     - cron: '30 12 * * *'
 
@@ -30,16 +27,13 @@ jobs:
           pip install pandas requests beautifulsoup4 google-generativeai
 
       - name: '4. Executar o Script (bot_make_rich.py)'
-        run: python bot_make_rich.py
+        run: python magalu_scrapper.py
         env:
-          # Injeta os segredos do GitHub como variáveis de ambiente
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           EMAIL_USER: ${{ secrets.EMAIL_USER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
 
       - name: '5. Salvar Artefatos (Resultados)'
-        # Este passo sempre será executado, mesmo se o passo 4 falhar
-        # Isso ajuda a salvar logs ou arquivos parciais para debug
         if: always()
         uses: actions/upload-artifact@v4
         with:
