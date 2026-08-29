@@ -190,7 +190,7 @@ def gemini_fx(dados_json):
     try:
         logging.info("Iniciando a análise braba com o modelo Gemini...")
         model = genai.GenerativeModel(
-            model_name="gemini-2.5-flash", 
+            model_name="gemini-2.5-flash",
             system_instruction=ALPHA_PROFIT_SYSTEM_PROMPT,
             generation_config={
                 "response_mime_type": "application/json",
@@ -240,14 +240,28 @@ def enviar_email_oportunidades(email_disparo, senha, email_destinatario, oportun
         return
 
     msg = EmailMessage()
-    msg["Subject"] = f'Alpha-Profit: 10 Oportunidades! ({time.strftime("%d/%m/%Y")})'
     msg["From"] = email_disparo
     msg["To"] = email_destinatario
 
-    oportunidades_html = formatar_oportunidades_html(oportunidades_dict)
-    mensagem_html = f"<html><body><h2>Alpha-Profit AI Bot</h2>{oportunidades_html}</body></html>"
+    # Lógica de Contingência: Se a IA falhou, oportunidades_dict estará vazio ou sem a chave certa.
+    if oportunidades_dict and "oportunidades" in oportunidades_dict:
+        msg["Subject"] = f'Alpha-Profit: 10 Oportunidades! ({time.strftime("%d/%m/%Y")})'
+        oportunidades_html = formatar_oportunidades_html(oportunidades_dict)
+        mensagem_html = f"<html><body><h2>Alpha-Profit AI Bot</h2>{oportunidades_html}</body></html>"
+    else:
+        msg["Subject"] = f'Alpha-Profit: Apenas CSV Diário ({time.strftime("%d/%m/%Y")}) - Alerta IA'
+        mensagem_html = """
+        <html><body>
+            <h2>Alpha-Profit AI Bot</h2>
+            <p>⚠️ <strong>Aviso:</strong> O robô concluiu a raspagem completa do site perfeitamente, 
+            porém a Inteligência Artificial falhou na hora de gerar os textos de venda hoje (pode ter sido um erro temporário no servidor deles).</p>
+            <p>De qualquer forma, o seu arquivo CSV com todos os dados raspados está salvo e anexado neste e-mail para você não perder oportunidades!</p>
+        </body></html>
+        """
+
     msg.set_content(mensagem_html, subtype="html")
 
+    # Sempre anexa o CSV, independentemente do sucesso da IA
     if df_todos_produtos is not None and not df_todos_produtos.empty:
         try:
             csv_str = df_todos_produtos.to_csv(
@@ -273,7 +287,7 @@ def enviar_email_oportunidades(email_disparo, senha, email_destinatario, oportun
             server.starttls()
             server.login(email_disparo, senha)
             server.send_message(msg)
-            logging.info("Email enviado com sucesso!")
+            logging.info("Email enviado com sucesso (Com IA ou apenas contingência)!")
     except Exception as e:
         logging.error(f"Erro no envio de e-mail: {e}")
 
@@ -289,67 +303,64 @@ if __name__ == "__main__":
     ]
 
     all_dfs = []  
-    logging.info("Iniciando scraping turbinado (agora lendo múltiplas páginas)...")
+    logging.info("Iniciando raspagem infinita! Rumo ao fim do catálogo...")
 
-    # NOVA LÓGICA DE PAGINAÇÃO:
+    # NOVA LÓGICA DE PAGINAÇÃO: INFINITA (While True)
     for url_base in URLS_BASE:
-        logging.info(f"Vasculhando a vitrine principal: {url_base}")
+        logging.info(f"--- Vasculhando a vitrine: {url_base} ---")
+        pagina = 1
         
-        # 1. Busca a primeira página e descobre o total de páginas existentes
-        df_pagina, total_pages = extrair_dados_magalu_live(url_base)
-        
-        if df_pagina is not None and not df_pagina.empty:
-            all_dfs.append(df_pagina) 
-
-        # 2. Se houver mais de uma página, vamos visitá-las!
-        if total_pages > 1:
-            # Dica: Limitamos a no máximo 5 páginas por categoria para evitar bloqueios 
-            # da loja e para o programa não demorar uma eternidade.
-            limite_paginas = min(total_pages, 5) 
+        while True:
+            # A url_paginada ganha o ?page=X (na primeira página pode ter, não afeta a loja)
+            url_paginada = f"{url_base}?page={pagina}"
+            logging.info(f"Buscando página {pagina}...")
             
-            # Cria o laço da página 2 até o limite estabelecido
-            for pagina in range(2, limite_paginas + 1):
-                # Adiciona o "?page=X" na URL, que é o padrão de paginação de e-commerces
-                url_paginada = f"{url_base}?page={pagina}"
-                logging.info(f"Buscando página {pagina} de {limite_paginas}...")
+            df_pagina, _ = extrair_dados_magalu_live(url_paginada)
+            
+            # Condição de parada (Break): Se o df vier vazio, é porque acabaram os produtos
+            if df_pagina is None or df_pagina.empty:
+                logging.info(f"Fim da linha! Não há mais produtos após a página {pagina-1}.")
+                break # Pula para a próxima categoria
                 
-                df_extra, _ = extrair_dados_magalu_live(url_paginada)
-                
-                if df_extra is not None and not df_extra.empty:
-                    all_dfs.append(df_extra)
-                
-                # Pausa estratégica de 2 segundos. Sem isso, a loja bloqueia nosso robô!
-                time.sleep(2)
+            all_dfs.append(df_pagina)
+            
+            pagina += 1
+            # Pausa estratégica para a loja não bloquear a gente
+            time.sleep(2)
 
-    # Verifica se pegou alguma coisa
+    # Verifica se pegou alguma coisa no total
     if not all_dfs:
-        logging.error("Nenhum produto extraído.")
+        logging.error("Nenhum produto extraído. Verifique as URLs ou bloqueios.")
         sys.exit(0)
 
     # Junta todas as tabelas raspadas em uma só super tabela
     df_produtos = pd.concat(all_dfs, ignore_index=True)
-    logging.info(f"Total de produtos raspados após paginação: {len(df_produtos)} itens!")
+    logging.info(f"SUCESSO TOTAL! {len(df_produtos)} itens raspados de todas as categorias!")
     
     # Prepara o Top 100 para a Inteligência Artificial não se perder com excesso de dados
     df_produtos["score_qualidade"] = (df_produtos["percentual_desconto"] * 0.6) + \
                                      (df_produtos["preco_atual"].between(35, 500) * 40)
     
     df_ordenado_para_ia = df_produtos.sort_values(by="score_qualidade", ascending=False).head(100)
-    
     json_input_data = gerar_json_para_ia(df_ordenado_para_ia.drop(columns=["score_qualidade"]))
 
     logging.info("\n=== CHAMANDO ALPHA-PROFIT (GEMINI) ===")
     json_final_output = gemini_fx(json_input_data)
 
+    # Tentamos ler a resposta da IA. Se der erro, 'oportunidades_dict' fica vazio.
     try:
         oportunidades_dict = json.loads(json_final_output)
-        if "oportunidades" in oportunidades_dict:
-            enviar_email_oportunidades(
-                email_disparo=os.getenv("EMAIL_USER"),
-                senha=os.getenv("EMAIL_PASSWORD"),
-                email_destinatario="rsouza.melo18@gmail.com",
-                oportunidades_dict=oportunidades_dict,
-                df_todos_produtos=df_produtos # Aqui vai a nossa super tabela completa pro CSV!
-            )
     except Exception as e:
-        logging.error(f"Erro no processamento final: {e}")
+        logging.warning(f"Erro ao interpretar JSON da IA. Ativando Contingência. Erro: {e}")
+        oportunidades_dict = {}
+
+    # O envio de e-mail agora é garantido, independentemente da IA funcionar ou não.
+    enviar_email_oportunidades(
+        email_disparo=os.getenv("EMAIL_USER"),
+        senha=os.getenv("EMAIL_PASSWORD"),
+        email_destinatario="rsouza.melo18@gmail.com",
+        oportunidades_dict=oportunidades_dict,
+        df_todos_produtos=df_produtos 
+    )
+    
+    logging.info("Processo totalmente concluído! Pode ir ver seu e-mail.")
