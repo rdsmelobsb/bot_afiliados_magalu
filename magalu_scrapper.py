@@ -11,6 +11,7 @@ import smtplib
 from email.message import EmailMessage
 import csv 
 from urllib.parse import urlparse, parse_qs 
+import re 
 
 # --- 1. Configuração do Logging e API ---
 
@@ -47,8 +48,9 @@ Eu fornecerei um [INPUT_DATA], que é uma string JSON representando um DataFrame
 * `preco_atual`: Preço de venda atual (em R$).
 * `preco_antigo`: Preço original (para cálculo de desconto).
 * `percentual_desconto`: (preco_antigo - preco_atual) / preco_antigo.
-* `categoria`: (Ex: 'Games', 'Hardware', 'Colecionáveis', 'Tecnologia').
-* `seller_id`: Identificador do vendedor ('magazineluiza' para 1P direto ou nome da loja parceira para 3P).
+* `categoria`: (Ex: 'Games', 'Hardware', 'Colecionáveis', 'Tecnologia', 'Celulares').
+* `loja`: Loja de origem ('Magalu' ou 'Mercado Livre').
+* `seller_id`: Identificador do vendedor ('magazineluiza' para 1P direto, nome da loja parceira para 3P, ou 'Mercado Livre Full').
 * `comissao_percent`: O percentual de comissão do afiliado (ex: 5.0 para 5%).
 * `lucro_estimado_reais`: O valor líquido estimado em R$ de comissão por venda (preco_atual * comissao_percent / 100).
 * `url_afiliado`: O link de compra.
@@ -59,7 +61,8 @@ Seu objetivo é identificar as 10 (DEZ) "Oportunidades de Ouro". Você deve prio
 * **Filtro 1: Aderência ao Ticket (Peso 35%)**: Selecione produtos onde `preco_atual` esteja na faixa de R$ 35,00 a R$ 500,00 (Sweet Spot de impulso).
 * **Filtro 2: Percepção de Valor (Peso 35%)**: Priorize produtos com o MAIOR `percentual_desconto`. A escassez e o desconto forte são os maiores gatilhos.
 * **Filtro 3: Potencial de Lucro Líquido (Peso 30%)**: Maximize a receita real do afiliado em R$ (`lucro_estimado_reais`). Um produto com bom desconto e comissão de R$ 25 é muito melhor que um que paga R$ 1.
-* **Filtro 4: Relevância (Qualificador)**: O produto deve ter apelo imediato para o nicho (Games, Geek, Tech, Smart House).
+* **Filtro 4: Relevância (Qualificador)**: O produto deve ter apelo imediato para o nicho (Games, Geek, Tech, Celulares, Smart House).
+* **Diversidade de Lojas**: Busque um bom equilíbrio entre as ofertas da Magalu e do Mercado Livre.
 
 **5. DIRETRIZ DE SAÍDA (OUTPUT):**
 Sua resposta deve ser um JSON ESTRITO. O JSON deve conter uma chave principal "oportunidades" que é um array de 10 objetos.
@@ -70,6 +73,7 @@ Sua resposta deve ser um JSON ESTRITO. O JSON deve conter uma chave principal "o
     {
       "sku_selecionado": "SKU_DO_PRODUTO_1",
       "nome_produto": "Nome do Produto 1",
+      "loja": "Mercado Livre",
       "preco_atual": 49.90,
       "percentual_desconto": 30,
       "comissao_percent": 5.0,
@@ -281,8 +285,9 @@ def extrair_dados_magalu_live(url):
             imagem_url = extrair_imagem_produto(product)
 
             product_data = {
-                "sku": product.get("id"),
+                "sku": f"MAGALU_{product.get('id')}",
                 "nome_produto": nome,
+                "loja": "Magalu",
                 "preco_atual": preco_atual,
                 "preco_antigo": preco_antigo,
                 "percentual_desconto": percentual_desconto,
@@ -305,6 +310,221 @@ def extrair_dados_magalu_live(url):
 
     df = pd.DataFrame(processed_products)
     return df, total_pages
+
+
+# --- Módulo Mercado Livre Afiliados ---
+
+TABELA_COMISSAO_MERCADOLIVRE = {
+    "games": 6.5,
+    "game": 6.5,
+    "console": 5.0,
+    "ps5": 5.0,
+    "xbox": 5.0,
+    "nintendo": 5.0,
+    "jogos": 7.0,
+    "informática": 5.0,
+    "informatica": 5.0,
+    "hardware": 4.5,
+    "computador": 4.0,
+    "notebook": 4.0,
+    "mouse": 6.5,
+    "teclado": 6.5,
+    "headset": 6.5,
+    "periféricos": 6.5,
+    "perifericos": 6.5,
+    "ssd": 5.0,
+    "monitor": 4.5,
+    "celulares": 3.5,
+    "celular": 3.5,
+    "smartphone": 3.5,
+    "telefonia": 3.5,
+    "áudio": 7.0,
+    "audio": 7.0,
+    "fone": 7.0,
+    "caixa de som": 6.5,
+    "casa inteligente": 6.0,
+    "smart house": 6.0,
+    "eletrônicos": 5.0,
+    "eletronicos": 5.0,
+}
+
+
+def calcular_comissao_mercadolivre(categoria_nome, nome_produto):
+    """Calcula a comissão oficial média do Programa de Afiliados do Mercado Livre."""
+    texto = f"{categoria_nome or ''} {nome_produto or ''}".lower()
+    for chave, taxa in TABELA_COMISSAO_MERCADOLIVRE.items():
+        if chave in texto:
+            return taxa
+    return 5.0
+
+
+def converter_link_afiliado_ml(url_produto, matt_tool="61727000", matt_word="rafaelmelo825"):
+    """
+    Injeta os parâmetros oficiais de rastreamento de afiliado do Rafael (matt_tool e matt_word).
+    """
+    if not url_produto:
+        return None
+    url_limpa = url_produto.split("#")[0]
+    sep = "&" if "?" in url_limpa else "?"
+    if "matt_tool" not in url_limpa:
+        url_limpa = f"{url_limpa}{sep}matt_tool={matt_tool}&matt_word={matt_word}&forceInApp=true"
+    return url_limpa
+
+
+def limpar_preco_ml(texto):
+    """Extrai número float a partir de texto de preço do Mercado Livre."""
+    if not texto:
+        return None
+    try:
+        limpo = re.sub(r"[^\d,\.]", "", str(texto))
+        if "." in limpo and "," in limpo:
+            limpo = limpo.replace(".", "").replace(",", ".")
+        elif "," in limpo:
+            limpo = limpo.replace(",", ".")
+        elif "." in limpo:
+            partes = limpo.split(".")
+            if len(partes[-1]) == 3:
+                limpo = "".join(partes)
+        val = float(limpo)
+        return val if val > 0 else None
+    except Exception:
+        return None
+
+
+def extrair_dados_mercadolivre_live(url, categoria_padrao="Geral"):
+    """
+    Raspa produtos e ofertas do Mercado Livre (suporta Perfil Social de Criador e Vitrines de Categorias).
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8",
+    }
+
+    termos_banidos = ['cabo', 'pelicula', 'capinha', 'adaptador', 'suporte simples', 'conector']
+
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+        html = response.text
+    except Exception as e:
+        logging.warning(f"Erro ao buscar URL do Mercado Livre ({url}): {e}")
+        return pd.DataFrame()
+
+    soup = BeautifulSoup(html, "html.parser")
+    processed = []
+
+    # 1. Procura cards Poly (layout moderno do ML, usado no Perfil Social e vitrines)
+    poly_cards = soup.find_all("div", class_=re.compile(r"poly-card", re.I))
+
+    # 2. Se não achar poly-cards, procura itens da busca tradicional (ui-search-layout__item)
+    search_cards = soup.find_all("li", class_=re.compile(r"ui-search-layout__item", re.I)) if not poly_cards else []
+
+    all_cards = poly_cards or search_cards
+
+    for i, card in enumerate(all_cards):
+        try:
+            # Título e Link
+            title_el = (
+                card.find("a", class_=re.compile(r"poly-component__title", re.I)) or
+                card.find("h2", class_=re.compile(r"poly-component__title|ui-search-item__title", re.I)) or
+                card.find("h2") or
+                card.find("a", class_=re.compile(r"ui-search-link", re.I))
+            )
+            if not title_el:
+                continue
+
+            nome = title_el.text.strip()
+            if any(t in nome.lower() for t in termos_banidos):
+                continue
+
+            link_el = card.find("a", href=True)
+            if not link_el or not link_el.get("href"):
+                continue
+
+            raw_url = link_el["href"]
+            url_afiliado = converter_link_afiliado_ml(raw_url)
+
+            # Imagem em alta resolução
+            img_el = card.find("img")
+            imagem_url = None
+            if img_el:
+                imagem_url = img_el.get("src") or img_el.get("data-src")
+                if imagem_url and imagem_url.startswith("//"):
+                    imagem_url = f"https:{imagem_url}"
+
+            # Preço atual
+            preco_atual = None
+            curr_price_el = (
+                card.find("div", class_=re.compile(r"poly-price__current", re.I)) or
+                card.find("span", class_=re.compile(r"price-tag-fraction", re.I)) or
+                card.find("div", class_=re.compile(r"ui-search-price__second-line", re.I))
+            )
+            if curr_price_el:
+                frac = curr_price_el.find(class_=re.compile(r"andes-money-amount__fraction|price-tag-fraction", re.I))
+                cents = curr_price_el.find(class_=re.compile(r"andes-money-amount__cents", re.I))
+                if frac:
+                    p_str = frac.text.strip()
+                    if cents:
+                        p_str += f",{cents.text.strip()}"
+                    preco_atual = limpar_preco_ml(p_str)
+                else:
+                    preco_atual = limpar_preco_ml(curr_price_el.text)
+
+            # Preço antigo
+            preco_antigo = None
+            prev_price_el = (
+                card.find("s", class_=re.compile(r"poly-price__previous|andes-money-amount", re.I)) or
+                card.find("s", class_=re.compile(r"ui-search-price__part--original", re.I))
+            )
+            if prev_price_el:
+                preco_antigo = limpar_preco_ml(prev_price_el.text)
+
+            if not preco_atual:
+                continue
+
+            if not preco_antigo or preco_antigo <= preco_atual:
+                preco_antigo = preco_atual
+
+            # Desconto %
+            percentual_desconto = 0.0
+            disc_el = card.find(class_=re.compile(r"discount|disc-label", re.I))
+            if disc_el:
+                m = re.search(r"(\d+)\s*%", disc_el.text)
+                if m:
+                    percentual_desconto = float(m.group(1))
+
+            if percentual_desconto == 0.0 and preco_antigo > preco_atual:
+                percentual_desconto = round(((preco_antigo - preco_atual) / preco_antigo) * 100, 2)
+
+            comissao = calcular_comissao_mercadolivre(categoria_padrao, nome)
+            lucro = round(preco_atual * (comissao / 100), 2)
+
+            sku_match = re.search(r"(MLB\d+|MLB-\d+)", raw_url, re.I)
+            sku = f"ML_{sku_match.group(1)}" if sku_match else f"ML_{i}_{abs(hash(nome)) % 1000000}"
+
+            item = {
+                "sku": sku,
+                "nome_produto": nome,
+                "loja": "Mercado Livre",
+                "preco_atual": preco_atual,
+                "preco_antigo": preco_antigo,
+                "percentual_desconto": percentual_desconto,
+                "categoria": categoria_padrao,
+                "seller_id": "Mercado Livre Full",
+                "comissao_percent": comissao,
+                "lucro_estimado_reais": lucro,
+                "imagem_url": imagem_url,
+                "url_afiliado": url_afiliado,
+            }
+            processed.append(item)
+        except Exception:
+            continue
+
+    if not processed:
+        return pd.DataFrame()
+
+    return pd.DataFrame(processed)
 
 
 def gerar_json_para_ia(df):
@@ -354,10 +574,11 @@ def formatar_oportunidades_html(oportunidades_dict):
 
             comissao_str = f"{comissao}%" if comissao is not None else "N/A"
             lucro_str = f"R$ {lucro:.2f}" if lucro is not None else "N/A"
+            loja_nome = op.get('loja', 'Oferta')
 
             html_out += f"""
             <div style="border: 1px solid #ddd; border-radius: 8px; margin-bottom: 20px; padding: 16px; background-color: #f9f9f9;">
-                <h3 style="color: #0086ff; margin-top: 0;">Oportunidade {i+1}: {op.get('nome_produto', 'N/A')}</h3>
+                <h3 style="color: #0086ff; margin-top: 0;">[{loja_nome}] Oportunidade {i+1}: {op.get('nome_produto', 'N/A')}</h3>
                 <p>
                     <strong>Preço:</strong> R$ {preco_atual:.2f} | 
                     <strong>Desconto:</strong> <span style="color: #c00;">{desconto}% OFF</span> | 
@@ -446,9 +667,13 @@ def enviar_oportunidade_telegram(bot_token, chat_id, oportunidade, imagem_url=No
     preco_atual = float(oportunidade.get("preco_atual", 0.0) or 0.0)
     desconto = float(oportunidade.get("percentual_desconto", 0.0) or 0.0)
     url_afiliado = oportunidade.get("url_afiliado", "")
+    loja = oportunidade.get("loja") or ("Mercado Livre" if "mercadolivre" in url_afiliado.lower() else "Magalu")
+
+    badge = "🟡 <b>[MERCADO LIVRE - FULL]</b>" if "mercado" in loja.lower() else "🔵 <b>[MAGALU]</b>"
+    btn_text = "🛒 VER NO MERCADO LIVRE" if "mercado" in loja.lower() else "🛒 GARANTIR OFERTA NO MAGALU"
 
     # Monta a legenda formatada com HTML suportado pelo Telegram
-    texto_caption = f"🔥 <b>{titulo}</b>\n\n"
+    texto_caption = f"{badge}\n🔥 <b>{titulo}</b>\n\n"
     if corpo:
         texto_caption += f"{corpo}\n\n"
 
@@ -464,7 +689,7 @@ def enviar_oportunidade_telegram(bot_token, chat_id, oportunidade, imagem_url=No
     if url_afiliado:
         reply_markup = {
             "inline_keyboard": [
-                [{"text": "🛒 GARANTIR OFERTA NO MAGALU", "url": url_afiliado}]
+                [{"text": btn_text, "url": url_afiliado}]
             ]
         }
 
@@ -560,46 +785,85 @@ def disparar_canal_telegram(bot_token, chat_id, oportunidades_dict, df_todos_pro
 
 if __name__ == "__main__":
 
-    URLS_BASE = [
+    URLS_BASE_MAGALU = [
         "https://www.magazinevoce.com.br/magazinedealz/informatica/l/in/",
         "https://www.magazinevoce.com.br/magazinedealz/games/l/ga/",
         "https://www.magazinevoce.com.br/magazinedealz/casa-inteligente/l/ci/",
     ]
 
-    all_dfs = []  
-    logging.info("Iniciando raspagem infinita! Rumo ao fim do catálogo...")
+    URL_ML_SOCIAL = (
+        "https://www.mercadolivre.com.br/social/rafaelmelo825"
+        "?matt_word=rafaelmelo825&matt_tool=61727000&forceInApp=true"
+        "&ref=BNMjcwPk80fK3V%2FaZkPyOPSUZvCKY1lXkz7gVn1Lk0heRiFWKmz5M4HRd6c6Lzr"
+        "%2FuAj586dkXZ2W8cbQV1wKa2LpVSemU7GsCrR5Mv0Ou4hXSI4eC47TaGOR2DuPSqEh81"
+        "ti8ZXhLB0DAdcCStEU8%2B3IwqjwS6GC2byelKta%2BPLZ9yC8%2FTUySd5A%2ByhIJJQo"
+        "9Gt9NvwD9Dle76xPtnsfM9P9NL%2Fj%2BQiaJVXOUEol2buRlVN5bpKt092dM8jij639Z3JOHg%3D%3D"
+    )
 
-    # NOVA LÓGICA DE PAGINAÇÃO: INFINITA (While True)
-    for url_base in URLS_BASE:
-        logging.info(f"--- Vasculhando a vitrine: {url_base} ---")
+    CATEGORIAS_ML = [
+        ("https://lista.mercadolivre.com.br/games", "Games"),
+        ("https://lista.mercadolivre.com.br/informatica", "Informática"),
+        ("https://lista.mercadolivre.com.br/celulares-telefones", "Celulares"),
+        ("https://lista.mercadolivre.com.br/eletronicos-audio-video", "Áudio & Geek"),
+        ("https://lista.mercadolivre.com.br/casa-inteligente", "Casa Inteligente"),
+    ]
+
+    all_dfs = []  
+    logging.info("🚀 Iniciando motor Multi-Plataforma: Magalu + Mercado Livre...")
+
+    # --- 1. RASPAGEM DA MAGAZINE LUIZA ---
+    logging.info("--- Vasculhando vitrines da Magazine Luiza ---")
+    for url_base in URLS_BASE_MAGALU:
+        logging.info(f"Vasculhando vitrine Magalu: {url_base}")
         pagina = 1
         
-        while True:
-            # A url_paginada ganha o ?page=X (na primeira página pode ter, não afeta a loja)
+        while pagina <= 5:  # Limite de segurança de páginas por categoria
             url_paginada = f"{url_base}?page={pagina}"
-            logging.info(f"Buscando página {pagina}...")
+            logging.info(f"Magalu: Buscando página {pagina}...")
             
             df_pagina, _ = extrair_dados_magalu_live(url_paginada)
             
-            # Condição de parada (Break): Se o df vier vazio, é porque acabaram os produtos
             if df_pagina is None or df_pagina.empty:
-                logging.info(f"Fim da linha! Não há mais produtos após a página {pagina-1}.")
-                break # Pula para a próxima categoria
+                logging.info(f"Magalu: Fim dos produtos após a página {pagina-1}.")
+                break
                 
             all_dfs.append(df_pagina)
-            
             pagina += 1
-            # Pausa estratégica para a loja não bloquear a gente
             time.sleep(2)
 
-    # Verifica se pegou alguma coisa no total
+    # --- 2. RASPAGEM DO MERCADO LIVRE ---
+    logging.info("--- Vasculhando vitrine e ofertas do Mercado Livre ---")
+    
+    # 2.1 Vitrine Social Oficial do Rafael (Games, Mais Vendidos e Super Ofertas)
+    try:
+        logging.info("Mercado Livre: Extraindo produtos da Vitrine Social Oficial...")
+        df_ml_social = extrair_dados_mercadolivre_live(URL_ML_SOCIAL, categoria_padrao="Games & Tech")
+        if df_ml_social is not None and not df_ml_social.empty:
+            logging.info(f"Mercado Livre: {len(df_ml_social)} produtos capturados da sua vitrine social!")
+            all_dfs.append(df_ml_social)
+    except Exception as e:
+        logging.warning(f"Erro ao raspar vitrine social do ML: {e}")
+
+    # 2.2 Categorias Selecionadas: Games, Informática, Celulares, Áudio e Casa Inteligente
+    for url_ml, cat_nome in CATEGORIAS_ML:
+        try:
+            logging.info(f"Mercado Livre: Buscando categoria {cat_nome} ({url_ml})...")
+            df_ml_cat = extrair_dados_mercadolivre_live(url_ml, categoria_padrao=cat_nome)
+            if df_ml_cat is not None and not df_ml_cat.empty:
+                logging.info(f"Mercado Livre [{cat_nome}]: {len(df_ml_cat)} produtos encontrados.")
+                all_dfs.append(df_ml_cat)
+            time.sleep(2)
+        except Exception as e:
+            logging.warning(f"Erro ao buscar categoria {cat_nome} do ML: {e}")
+
+    # Verifica se pegou produtos no total
     if not all_dfs:
-        logging.error("Nenhum produto extraído. Verifique as URLs ou bloqueios.")
+        logging.error("Nenhum produto extraído de nenhuma das plataformas. Verifique as conexões.")
         sys.exit(0)
 
-    # Junta todas as tabelas raspadas em uma só super tabela
+    # Junta todas as tabelas em um único super catálogo
     df_produtos = pd.concat(all_dfs, ignore_index=True)
-    logging.info(f"SUCESSO TOTAL! {len(df_produtos)} itens raspados de todas as categorias!")
+    logging.info(f"SUCESSO TOTAL! {len(df_produtos)} itens capturados de Magalu e Mercado Livre!")
     
     # Prepara o Top 100 ponderando Desconto + Lucro em R$ no bolso + Sweet Spot
     df_produtos["score_qualidade"] = (
