@@ -81,7 +81,7 @@ flowchart TD
 ```text
 ├── .github/
 │   └── workflows/
-│       └── alpha-profit-bot.yml    # Pipeline CI/CD de automação diária no GitHub Actions
+│       └── alpha-profit-bot.yml    # Pipeline CI/CD de automação (3x ao dia: 10h, 15h e 20h BRT)
 ├── .gitignore                      # Arquivos ignorados pelo Git (caches, logs, envs)
 ├── magalu_scrapper.py              # Script principal (Scraper, Cálculo, IA e Disparos)
 └── README.md                       # Documentação técnica do projeto

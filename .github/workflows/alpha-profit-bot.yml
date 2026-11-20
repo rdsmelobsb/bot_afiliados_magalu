@@ -1,12 +1,14 @@
 # .github/workflows/alpha_profit_bot.yml
 
-name: 'Alpha-Profit: Execução Diária'
+name: 'Alpha-Profit: Execução Automática (3x ao Dia)'
 
 on:
-
   workflow_dispatch:
   schedule:
-    - cron: '30 12 * * *'
+    # GitHub Actions roda em UTC (Horário de Brasília é UTC-3):
+    - cron: '0 13 * * *'  # 10:00 BRT (Manhã - Ofertas de Abertura)
+    - cron: '0 18 * * *'  # 15:00 BRT (Tarde - Promoções Relâmpago)
+    - cron: '0 23 * * *'  # 20:00 BRT (Noite - Pico de Vendas e Conversão)
 
 jobs:
   run-alpha-profit-bot:
