@@ -26,9 +26,17 @@ jobs:
       - name: '3. Instalar Dependências'
         run: |
           python -m pip install --upgrade pip
-          pip install pandas requests beautifulsoup4 google-generativeai
+          pip install pandas requests beautifulsoup4 google-generativeai pillow
 
-      - name: '4. Executar o Script (bot_make_rich.py)'
+      - name: '3.5. Restaurar Histórico Anti-Repetição (72h)'
+        uses: actions/cache/restore@v4
+        with:
+          path: historico_postados.json
+          key: historico-postados-${{ github.run_id }}
+          restore-keys: |
+            historico-postados-
+
+      - name: '4. Executar o Script (magalu_scrapper.py)'
         run: python magalu_scrapper.py
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -36,6 +44,13 @@ jobs:
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      - name: '4.5. Salvar Histórico Anti-Repetição'
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: historico_postados.json
+          key: historico-postados-${{ github.run_id }}
 
       - name: '5. Salvar Artefatos (Resultados)'
         if: always()

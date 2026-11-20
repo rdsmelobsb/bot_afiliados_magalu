@@ -12,6 +12,15 @@ from email.message import EmailMessage
 import csv 
 from urllib.parse import urlparse, parse_qs 
 import re 
+import random
+from datetime import datetime, timedelta
+from io import BytesIO
+
+try:
+    from PIL import Image
+    PILLOW_DISPONIVEL = True
+except ImportError:
+    PILLOW_DISPONIVEL = False
 
 # --- 1. Configuração do Logging e API ---
 
@@ -447,8 +456,11 @@ def extrair_dados_mercadolivre_live(url, categoria_padrao="Geral"):
             raw_url = link_el["href"]
             url_afiliado = converter_link_afiliado_ml(raw_url)
 
-            # Imagem em alta resolução (extrai a URL real ignorando placeholders base64)
-            img_el = card.find("img")
+            # Imagem em alta resolução (busca especificamente a foto principal do produto)
+            img_el = (
+                card.find("img", class_=re.compile(r"poly-component__picture|ui-search-result-image__element", re.I)) or
+                card.find("img")
+            )
             imagem_url = None
             if img_el:
                 candidatos = [
@@ -458,16 +470,14 @@ def extrair_dados_mercadolivre_live(url, categoria_padrao="Geral"):
                     img_el.get("src")
                 ]
                 for c in candidatos:
-                    if c and not str(c).startswith("data:"):
-                        c_str = str(c).split()[0].strip()  # caso de srcset "url 1x, url 2x"
+                    if c and not str(c).strip().startswith("data:"):
+                        # Limpa srcset (ex: "https://...webp 1x, https://...2x")
+                        c_str = str(c).split(",")[0].strip().split()[0].strip()
                         if c_str.startswith("//"):
                             c_str = f"https:{c_str}"
-                        imagem_url = c_str
-                        break
-
-            # Se for formato .webp do ML, tenta obter a versão .jpg universal
-            if imagem_url and imagem_url.endswith(".webp"):
-                imagem_url = imagem_url[:-5] + ".jpg"
+                        if c_str.startswith("http"):
+                            imagem_url = c_str
+                            break
 
             # Preço atual
             preco_atual = None
@@ -557,10 +567,10 @@ def gemini_fx(dados_json):
             system_instruction=ALPHA_PROFIT_SYSTEM_PROMPT,
             generation_config={
                 "response_mime_type": "application/json",
-                "temperature": 0.3
+                "temperature": 0.65
             }
         )
-        prompt_usuario = f"Analise o catálogo abaixo e retorne as 10 Oportunidades de Ouro seguindo as regras do sistema:\n\n{dados_json}"
+        prompt_usuario = f"Analise o catálogo abaixo e retorne EXATAMENTE 20 Oportunidades de Ouro (15 do Mercado Livre e 5 da Magalu), priorizando variedade de produtos e categorias, seguindo as regras do sistema:\n\n{dados_json}"
         result = model.generate_content(
             prompt_usuario,
             safety_settings={
@@ -711,33 +721,62 @@ def enviar_oportunidade_telegram(bot_token, chat_id, oportunidade, imagem_url=No
 
     # Tentativa 1: Enviar com a Foto do produto em alta resolução
     if imagem_url:
-        # Método 1.1: Baixa os bytes da imagem com headers e envia como arquivo multipart
-        # Isso contorna bloqueios de CDN (Mercado Livre / Magalu) e problemas com formato .webp
-        try:
-            headers_img = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Referer": "https://www.mercadolivre.com.br/"
-            }
-            img_resp = requests.get(imagem_url, headers=headers_img, timeout=10)
-            if img_resp.status_code == 200 and len(img_resp.content) > 500:
-                url_api = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
-                files = {"photo": ("produto.jpg", img_resp.content, "image/jpeg")}
-                data = {
-                    "chat_id": chat_id,
-                    "caption": texto_caption,
-                    "parse_mode": "HTML",
-                }
-                if reply_markup:
-                    data["reply_markup"] = json.dumps(reply_markup)
+        # Método 1.1: Baixa os bytes da imagem e converte para JPEG real (via Pillow)
+        # Resolve 100% o problema das imagens .webp do Mercado Livre rejeitadas pelo Telegram
+        urls_tentativa = [imagem_url]
+        if imagem_url.endswith(".webp"):
+            urls_tentativa.append(imagem_url[:-5] + ".jpg")
+        elif imagem_url.endswith(".jpg"):
+            urls_tentativa.append(imagem_url[:-4] + ".webp")
 
-                resp = requests.post(url_api, data=data, files=files, timeout=15)
-                if resp.status_code == 200:
-                    logging.info(f"Oportunidade postada com foto (upload direto) no Telegram: {titulo[:35]}...")
-                    return True
-                else:
-                    logging.warning(f"Telegram retornou status {resp.status_code} no upload da foto: {resp.text}")
-        except Exception as e:
-            logging.warning(f"Erro no download/upload da foto do produto: {e}")
+        headers_img = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "image/avif,image/webp,image/apng,image/jpeg,image/png,*/*;q=0.8",
+            "Referer": "https://www.mercadolivre.com.br/" if "mlstatic" in imagem_url else "https://www.magazinevoce.com.br/"
+        }
+
+        for url_img_atual in urls_tentativa:
+            try:
+                img_resp = requests.get(url_img_atual, headers=headers_img, timeout=12)
+                if img_resp.status_code == 200 and len(img_resp.content) > 500:
+                    img_bytes = img_resp.content
+
+                    # Converte WebP/PNG/qualquer formato para JPEG genuíno em memória
+                    if PILLOW_DISPONIVEL:
+                        try:
+                            im = Image.open(BytesIO(img_bytes))
+                            if im.mode in ("RGBA", "LA", "P"):
+                                fundo = Image.new("RGB", im.size, (255, 255, 255))
+                                if im.mode == "P":
+                                    im = im.convert("RGBA")
+                                fundo.paste(im, mask=im.split()[-1] if im.mode == "RGBA" else None)
+                                im = fundo
+                            else:
+                                im = im.convert("RGB")
+                            buf = BytesIO()
+                            im.save(buf, format="JPEG", quality=90)
+                            img_bytes = buf.getvalue()
+                        except Exception as conv_err:
+                            logging.warning(f"Falha ao converter imagem via Pillow: {conv_err}")
+
+                    url_api = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+                    files = {"photo": ("produto.jpg", img_bytes, "image/jpeg")}
+                    data = {
+                        "chat_id": chat_id,
+                        "caption": texto_caption,
+                        "parse_mode": "HTML",
+                    }
+                    if reply_markup:
+                        data["reply_markup"] = json.dumps(reply_markup)
+
+                    resp = requests.post(url_api, data=data, files=files, timeout=15)
+                    if resp.status_code == 200:
+                        logging.info(f"Oportunidade postada com foto (JPEG convertido) no Telegram: {titulo[:35]}...")
+                        return True
+                    else:
+                        logging.warning(f"Telegram retornou status {resp.status_code} no upload da foto ({url_img_atual}): {resp.text}")
+            except Exception as e:
+                logging.warning(f"Erro no download/upload da foto ({url_img_atual}): {e}")
 
         # Método 1.2: Envio direto por URL (caso o upload direto falhe)
         try:
@@ -786,55 +825,127 @@ def enviar_oportunidade_telegram(bot_token, chat_id, oportunidade, imagem_url=No
 
 def disparar_canal_telegram(bot_token, chat_id, oportunidades_dict, df_todos_produtos=None, intervalo_segundos=3):
     """
-    Percorre a lista de 10 oportunidades e dispara uma a uma no canal do Telegram,
-    com um espaçamento de segurança para evitar rate limits.
+    Percorre a lista de oportunidades e dispara uma a uma no canal do Telegram,
+    retornando a lista de SKUs publicados para registro no histórico anti-repetição.
     """
+    skus_postados = []
     if not bot_token or not chat_id:
         logging.warning("Credenciais do Telegram ausentes (TELEGRAM_BOT_TOKEN ou TELEGRAM_CHAT_ID). Pulando envio para o canal.")
-        return
+        return skus_postados
 
     oportunidades = oportunidades_dict.get("oportunidades", [])
     if not oportunidades:
         logging.info("Nenhuma oportunidade para enviar ao Telegram.")
-        return
+        return skus_postados
 
-    # Indexa imagem_url e preco_antigo por SKU
-    mapa_produtos = {}
+    # Indexa imagem_url e preco_antigo por SKU, URL e Nome (evita perder foto se a IA alterar o SKU)
+    mapa_por_sku = {}
+    mapa_por_url = {}
+    mapa_por_nome = {}
     if df_todos_produtos is not None and not df_todos_produtos.empty:
         for _, row in df_todos_produtos.iterrows():
-            sku = str(row.get("sku", ""))
-            mapa_produtos[sku] = {
+            info = {
+                "sku": str(row.get("sku", "")),
                 "imagem_url": row.get("imagem_url"),
                 "preco_antigo": row.get("preco_antigo")
             }
+            sku = info["sku"]
+            url_af = str(row.get("url_afiliado", "") or "")
+            nome_norm = str(row.get("nome_produto", "") or "").strip().lower()[:40]
+            if sku:
+                mapa_por_sku[sku] = info
+            if url_af:
+                mapa_por_url[url_af] = info
+            if nome_norm:
+                mapa_por_nome[nome_norm] = info
 
     logging.info(f"🚀 Iniciando postagem de {len(oportunidades)} ofertas no Canal do Telegram...")
     sucessos = 0
 
     for i, op in enumerate(oportunidades):
         sku = str(op.get("sku_selecionado", ""))
-        extra = mapa_produtos.get(sku, {})
+        url_op = str(op.get("url_afiliado", "") or "")
+        nome_op = str(op.get("nome_produto", "") or "").strip().lower()[:40]
+
+        extra = (
+            mapa_por_sku.get(sku) or
+            mapa_por_url.get(url_op) or
+            mapa_por_nome.get(nome_op) or
+            {}
+        )
         imagem_url = op.get("imagem_url") or extra.get("imagem_url")
         preco_antigo = op.get("preco_antigo") or extra.get("preco_antigo")
+        sku_real = extra.get("sku") or sku
 
         if enviar_oportunidade_telegram(bot_token, chat_id, op, imagem_url=imagem_url, preco_antigo=preco_antigo):
             sucessos += 1
+            if sku_real:
+                skus_postados.append(sku_real)
 
         if i < len(oportunidades) - 1:
             time.sleep(intervalo_segundos)
 
     logging.info(f"🎉 Finalizado: {sucessos}/{len(oportunidades)} ofertas publicadas no Telegram com sucesso!")
+    return skus_postados
+
+
+# --- 3.5. Controle de Histórico Anti-Repetição (72 horas) ---
+
+HISTORICO_ARQUIVO = "historico_postados.json"
+
+
+def carregar_historico_postados(horas_validade=72):
+    """Carrega SKUs postados recentemente e expira automaticamente os mais antigos que horas_validade."""
+    if not os.path.exists(HISTORICO_ARQUIVO):
+        return {}
+    try:
+        with open(HISTORICO_ARQUIVO, "r", encoding="utf-8") as f:
+            dados = json.load(f)
+        limite = datetime.now() - timedelta(hours=horas_validade)
+        ativo = {}
+        for sku, ts_str in dados.items():
+            try:
+                if datetime.fromisoformat(ts_str) > limite:
+                    ativo[sku] = ts_str
+            except Exception:
+                continue
+        logging.info(f"Histórico anti-repetição carregado: {len(ativo)} ofertas bloqueadas nas últimas {horas_validade}h.")
+        return ativo
+    except Exception as e:
+        logging.warning(f"Não foi possível ler {HISTORICO_ARQUIVO}: {e}")
+        return {}
+
+
+def salvar_historico_postados(historico_atual, novos_skus):
+    """Adiciona os SKUs recém-postados ao histórico local (persistido via cache no GitHub Actions)."""
+    agora = datetime.now().isoformat()
+    for sku in novos_skus:
+        if sku:
+            historico_atual[str(sku)] = agora
+    try:
+        with open(HISTORICO_ARQUIVO, "w", encoding="utf-8") as f:
+            json.dump(historico_atual, f, ensure_ascii=False, indent=2)
+        logging.info(f"Histórico atualizado: {len(novos_skus)} novas ofertas registradas ({len(historico_atual)} no total).")
+    except Exception as e:
+        logging.warning(f"Erro ao salvar {HISTORICO_ARQUIVO}: {e}")
 
 
 # --- 4. O Maestro da Orquestra (Bloco Principal Modificado) ---
 
 if __name__ == "__main__":
 
-    URLS_BASE_MAGALU = [
+    # Carrega histórico das últimas 72h para não repetir as mesmas ofertas
+    historico_postados = carregar_historico_postados(horas_validade=72)
+
+    POOL_MAGALU = [
         "https://www.magazinevoce.com.br/magazinedealz/informatica/l/in/",
         "https://www.magazinevoce.com.br/magazinedealz/games/l/ga/",
         "https://www.magazinevoce.com.br/magazinedealz/casa-inteligente/l/ci/",
+        "https://www.magazinevoce.com.br/magazinedealz/celulares-e-smartphones/l/te/",
+        "https://www.magazinevoce.com.br/magazinedealz/audio/l/ea/",
     ]
+    # Sorteia 3 categorias da Magalu por execução para variar o catálogo
+    URLS_BASE_MAGALU = random.sample(POOL_MAGALU, k=3)
 
     URL_ML_SOCIAL = (
         "https://www.mercadolivre.com.br/social/rafaelmelo825"
@@ -845,13 +956,28 @@ if __name__ == "__main__":
         "9Gt9NvwD9Dle76xPtnsfM9P9NL%2Fj%2BQiaJVXOUEol2buRlVN5bpKt092dM8jij639Z3JOHg%3D%3D"
     )
 
-    CATEGORIAS_ML = [
+    # Pool diversificado de buscas e subcategorias no Mercado Livre (rotação a cada disparo)
+    POOL_ML = [
         ("https://lista.mercadolivre.com.br/games", "Games"),
+        ("https://lista.mercadolivre.com.br/controle-sem-fio-gamer", "Games"),
+        ("https://lista.mercadolivre.com.br/headset-gamer", "Games"),
+        ("https://lista.mercadolivre.com.br/jogos-ps5-xbox-nintendo", "Games"),
         ("https://lista.mercadolivre.com.br/informatica", "Informática"),
+        ("https://lista.mercadolivre.com.br/ssd-nvme", "Informática"),
+        ("https://lista.mercadolivre.com.br/mouse-gamer", "Informática"),
+        ("https://lista.mercadolivre.com.br/teclado-mecanico", "Informática"),
+        ("https://lista.mercadolivre.com.br/monitor-gamer", "Informática"),
         ("https://lista.mercadolivre.com.br/celulares-telefones", "Celulares"),
+        ("https://lista.mercadolivre.com.br/smartwatch", "Celulares"),
         ("https://lista.mercadolivre.com.br/eletronicos-audio-video", "Áudio & Geek"),
+        ("https://lista.mercadolivre.com.br/fone-bluetooth-tws", "Áudio & Geek"),
+        ("https://lista.mercadolivre.com.br/caixa-de-som-bluetooth", "Áudio & Geek"),
         ("https://lista.mercadolivre.com.br/casa-inteligente", "Casa Inteligente"),
+        ("https://lista.mercadolivre.com.br/alexa-echo-dot", "Casa Inteligente"),
+        ("https://lista.mercadolivre.com.br/fita-led-rgb-wifi", "Casa Inteligente"),
     ]
+    # Sorteia 7 frentes diferentes do ML a cada execução para minerar novidades sempre
+    CATEGORIAS_ML = random.sample(POOL_ML, k=7)
 
     all_dfs = []  
     logging.info("🚀 Iniciando motor Multi-Plataforma: Magalu + Mercado Livre...")
@@ -860,9 +986,9 @@ if __name__ == "__main__":
     logging.info("--- Vasculhando vitrines da Magazine Luiza ---")
     for url_base in URLS_BASE_MAGALU:
         logging.info(f"Vasculhando vitrine Magalu: {url_base}")
-        pagina = 1
-        
-        while pagina <= 5:  # Limite de segurança de páginas por categoria
+        # Começa em página 1 ou sorteia uma janela de páginas (ex: 1..4 ou 2..5) para variar
+        pagina_inicial = random.choice([1, 1, 2, 3])
+        for pagina in range(pagina_inicial, pagina_inicial + 4):
             url_paginada = f"{url_base}?page={pagina}"
             logging.info(f"Magalu: Buscando página {pagina}...")
             
@@ -873,7 +999,6 @@ if __name__ == "__main__":
                 break
                 
             all_dfs.append(df_pagina)
-            pagina += 1
             time.sleep(2)
 
     # --- 2. RASPAGEM DO MERCADO LIVRE ---
@@ -889,11 +1014,17 @@ if __name__ == "__main__":
     except Exception as e:
         logging.warning(f"Erro ao raspar vitrine social do ML: {e}")
 
-    # 2.2 Categorias Selecionadas: Games, Informática, Celulares, Áudio e Casa Inteligente
+    # 2.2 Categorias e Subnichos sorteados nesta rodada (alternando página 1 e página 2)
     for url_ml, cat_nome in CATEGORIAS_ML:
         try:
-            logging.info(f"Mercado Livre: Buscando categoria {cat_nome} ({url_ml})...")
-            df_ml_cat = extrair_dados_mercadolivre_live(url_ml, categoria_padrao=cat_nome)
+            # 40% das vezes mergulha na página 2 (_Desde_49) para encontrar achados menos óbvios
+            url_alvo = f"{url_ml}_Desde_49" if random.random() < 0.4 else url_ml
+            logging.info(f"Mercado Livre: Buscando {cat_nome} ({url_alvo})...")
+            df_ml_cat = extrair_dados_mercadolivre_live(url_alvo, categoria_padrao=cat_nome)
+            if df_ml_cat is None or df_ml_cat.empty:
+                # Fallback para página 1 se página 2 vier vazia
+                if url_alvo != url_ml:
+                    df_ml_cat = extrair_dados_mercadolivre_live(url_ml, categoria_padrao=cat_nome)
             if df_ml_cat is not None and not df_ml_cat.empty:
                 logging.info(f"Mercado Livre [{cat_nome}]: {len(df_ml_cat)} produtos encontrados.")
                 all_dfs.append(df_ml_cat)
@@ -906,15 +1037,28 @@ if __name__ == "__main__":
         logging.error("Nenhum produto extraído de nenhuma das plataformas. Verifique as conexões.")
         sys.exit(0)
 
-    # Junta todas as tabelas em um único super catálogo
-    df_produtos = pd.concat(all_dfs, ignore_index=True)
-    logging.info(f"SUCESSO TOTAL! {len(df_produtos)} itens capturados de Magalu e Mercado Livre!")
+    # Junta todas as tabelas e remove duplicatas por SKU
+    df_produtos = pd.concat(all_dfs, ignore_index=True).drop_duplicates(subset=["sku"])
+    total_bruto = len(df_produtos)
+
+    # Filtra fora produtos já postados nas últimas 72h (Anti-Repetição)
+    if historico_postados:
+        df_ineditos = df_produtos[~df_produtos["sku"].astype(str).isin(historico_postados.keys())]
+        if len(df_ineditos) >= 25:
+            logging.info(f"Filtro anti-repetição aplicado: {total_bruto - len(df_ineditos)} ofertas recentes ignoradas. Restaram {len(df_ineditos)} inéditas!")
+            df_produtos = df_ineditos.copy()
+        else:
+            logging.info("Poucos produtos inéditos nesta rodada; mantendo catálogo completo com rotação por jitter.")
+
+    logging.info(f"SUCESSO TOTAL! {len(df_produtos)} itens elegíveis de Magalu e Mercado Livre!")
     
-    # Prepara o Top 100 ponderando Desconto + Lucro em R$ no bolso + Sweet Spot
+    # Prepara o Score ponderando Desconto + Lucro em R$ + Sweet Spot + Jitter de diversidade
+    jitter = [random.uniform(0, 8) for _ in range(len(df_produtos))]
     df_produtos["score_qualidade"] = (
         (df_produtos["percentual_desconto"] * 0.35) +
         (df_produtos["lucro_estimado_reais"].clip(upper=80) * 0.40) +
-        (df_produtos["preco_atual"].between(35, 500) * 25)
+        (df_produtos["preco_atual"].between(35, 500) * 25) +
+        jitter
     )
     
     # Prepara o catálogo balanceado para a IA: Top Mercado Livre + Top Magalu
@@ -926,7 +1070,7 @@ if __name__ == "__main__":
     else:
         df_ordenado_para_ia = df_produtos.sort_values(by="score_qualidade", ascending=False).head(120)
 
-    logging.info(f"Enviando {len(df_ordenado_para_ia)} candidatos filtrados para a IA escolher as 20 melhores (15 ML + 5 Magalu)...")
+    logging.info(f"Enviando {len(df_ordenado_para_ia)} candidatos inéditos para a IA escolher as 20 melhores (15 ML + 5 Magalu)...")
     json_input_data = gerar_json_para_ia(df_ordenado_para_ia.drop(columns=["score_qualidade"]))
 
     logging.info("\n=== CHAMANDO ALPHA-PROFIT (GEMINI) ===")
@@ -949,12 +1093,16 @@ if __name__ == "__main__":
     )
 
     # 🚀 DISPARO AUTOMÁTICO NO TELEGRAM (Canal de Ofertas / Grupo VIP)
-    disparar_canal_telegram(
+    skus_postados = disparar_canal_telegram(
         bot_token=os.getenv("TELEGRAM_BOT_TOKEN"),
         chat_id=os.getenv("TELEGRAM_CHAT_ID"),
         oportunidades_dict=oportunidades_dict,
         df_todos_produtos=df_produtos,
         intervalo_segundos=3
     )
+
+    # Atualiza o histórico de 72h para que os próximos disparos tragam novidades
+    if skus_postados:
+        salvar_historico_postados(historico_postados, skus_postados)
     
     logging.info("Processo totalmente concluído! Pode ir ver seu e-mail e seu canal do Telegram.")
