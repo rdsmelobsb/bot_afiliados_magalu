@@ -24,7 +24,7 @@ flowchart TD
 
     subgraph EstrategiaIA ["3. Curadoria & Copywriting (Gemini)"]
         IA["Google Gemini 2.5 Flash<br/>Alpha-Profit C-Level Prompt"]
-        COPY["Seleção do Top 10 + Copy Persuasiva (AIDA)"]
+        COPY["Seleção do Top 20 (15 ML + 5 Magalu)<br/>+ Copy Persuasiva (AIDA)"]
     end
 
     subgraph Distribuicao ["4. Canais de Venda Automáticos"]

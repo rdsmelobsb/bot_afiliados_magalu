@@ -56,16 +56,18 @@ Eu fornecerei um [INPUT_DATA], que é uma string JSON representando um DataFrame
 * `url_afiliado`: O link de compra.
 
 **4. PROCESSO DE DECISÃO ESTRATÉGICA (THOUGHT_PROCESS):**
-Seu objetivo é identificar as 10 (DEZ) "Oportunidades de Ouro". Você deve priorizar com base nesta hierarquia de decisão:
+Seu objetivo é identificar EXATAMENTE 20 (VINTE) "Oportunidades de Ouro", cumprindo OBRIGATORIAMENTE esta distribuição de lojas:
+* **15 Oportunidades do Mercado Livre** (`loja` = 'Mercado Livre')
+* **5 Oportunidades do Magazine Luiza** (`loja` = 'Magalu')
 
+Dentro de cada loja, priorize com base nesta hierarquia de decisão:
 * **Filtro 1: Aderência ao Ticket (Peso 35%)**: Selecione produtos onde `preco_atual` esteja na faixa de R$ 35,00 a R$ 500,00 (Sweet Spot de impulso).
 * **Filtro 2: Percepção de Valor (Peso 35%)**: Priorize produtos com o MAIOR `percentual_desconto`. A escassez e o desconto forte são os maiores gatilhos.
 * **Filtro 3: Potencial de Lucro Líquido (Peso 30%)**: Maximize a receita real do afiliado em R$ (`lucro_estimado_reais`). Um produto com bom desconto e comissão de R$ 25 é muito melhor que um que paga R$ 1.
 * **Filtro 4: Relevância (Qualificador)**: O produto deve ter apelo imediato para o nicho (Games, Geek, Tech, Celulares, Smart House).
-* **Diversidade de Lojas**: Busque um bom equilíbrio entre as ofertas da Magalu e do Mercado Livre.
 
 **5. DIRETRIZ DE SAÍDA (OUTPUT):**
-Sua resposta deve ser um JSON ESTRITO. O JSON deve conter uma chave principal "oportunidades" que é um array de 10 objetos.
+Sua resposta deve ser um JSON ESTRITO. O JSON deve conter uma chave principal "oportunidades" que é um array de EXATAMENTE 20 objetos (15 do Mercado Livre e 5 da Magalu). Intercale as ofertas para manter uma experiência dinâmica no canal!
 
 **Cumpra este formato EXATAMENTE:**
 {
@@ -445,13 +447,27 @@ def extrair_dados_mercadolivre_live(url, categoria_padrao="Geral"):
             raw_url = link_el["href"]
             url_afiliado = converter_link_afiliado_ml(raw_url)
 
-            # Imagem em alta resolução
+            # Imagem em alta resolução (extrai a URL real ignorando placeholders base64)
             img_el = card.find("img")
             imagem_url = None
             if img_el:
-                imagem_url = img_el.get("src") or img_el.get("data-src")
-                if imagem_url and imagem_url.startswith("//"):
-                    imagem_url = f"https:{imagem_url}"
+                candidatos = [
+                    img_el.get("data-src"),
+                    img_el.get("data-srcset"),
+                    img_el.get("srcset"),
+                    img_el.get("src")
+                ]
+                for c in candidatos:
+                    if c and not str(c).startswith("data:"):
+                        c_str = str(c).split()[0].strip()  # caso de srcset "url 1x, url 2x"
+                        if c_str.startswith("//"):
+                            c_str = f"https:{c_str}"
+                        imagem_url = c_str
+                        break
+
+            # Se for formato .webp do ML, tenta obter a versão .jpg universal
+            if imagem_url and imagem_url.endswith(".webp"):
+                imagem_url = imagem_url[:-5] + ".jpg"
 
             # Preço atual
             preco_atual = None
@@ -608,7 +624,7 @@ def enviar_email_oportunidades(email_disparo, senha, email_destinatario, oportun
 
     # Lógica de Contingência: Se a IA falhou, oportunidades_dict estará vazio ou sem a chave certa.
     if oportunidades_dict and "oportunidades" in oportunidades_dict:
-        msg["Subject"] = f'Alpha-Profit: 10 Oportunidades! ({time.strftime("%d/%m/%Y")})'
+        msg["Subject"] = f'Alpha-Profit: 20 Oportunidades! (15 Mercado Livre + 5 Magalu) ({time.strftime("%d/%m/%Y")})'
         oportunidades_html = formatar_oportunidades_html(oportunidades_dict)
         mensagem_html = f"<html><body><h2>Alpha-Profit AI Bot</h2>{oportunidades_html}</body></html>"
     else:
@@ -695,6 +711,35 @@ def enviar_oportunidade_telegram(bot_token, chat_id, oportunidade, imagem_url=No
 
     # Tentativa 1: Enviar com a Foto do produto em alta resolução
     if imagem_url:
+        # Método 1.1: Baixa os bytes da imagem com headers e envia como arquivo multipart
+        # Isso contorna bloqueios de CDN (Mercado Livre / Magalu) e problemas com formato .webp
+        try:
+            headers_img = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Referer": "https://www.mercadolivre.com.br/"
+            }
+            img_resp = requests.get(imagem_url, headers=headers_img, timeout=10)
+            if img_resp.status_code == 200 and len(img_resp.content) > 500:
+                url_api = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+                files = {"photo": ("produto.jpg", img_resp.content, "image/jpeg")}
+                data = {
+                    "chat_id": chat_id,
+                    "caption": texto_caption,
+                    "parse_mode": "HTML",
+                }
+                if reply_markup:
+                    data["reply_markup"] = json.dumps(reply_markup)
+
+                resp = requests.post(url_api, data=data, files=files, timeout=15)
+                if resp.status_code == 200:
+                    logging.info(f"Oportunidade postada com foto (upload direto) no Telegram: {titulo[:35]}...")
+                    return True
+                else:
+                    logging.warning(f"Telegram retornou status {resp.status_code} no upload da foto: {resp.text}")
+        except Exception as e:
+            logging.warning(f"Erro no download/upload da foto do produto: {e}")
+
+        # Método 1.2: Envio direto por URL (caso o upload direto falhe)
         try:
             url_api = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
             payload = {
@@ -708,12 +753,12 @@ def enviar_oportunidade_telegram(bot_token, chat_id, oportunidade, imagem_url=No
 
             resp = requests.post(url_api, data=payload, timeout=12)
             if resp.status_code == 200:
-                logging.info(f"Oportunidade postada com foto no Telegram: {titulo[:35]}...")
+                logging.info(f"Oportunidade postada com foto (URL) no Telegram: {titulo[:35]}...")
                 return True
             else:
-                logging.warning(f"Telegram retornou status {resp.status_code} na foto: {resp.text}. Tentando em texto...")
+                logging.warning(f"Telegram retornou status {resp.status_code} na foto via URL: {resp.text}")
         except Exception as e:
-            logging.warning(f"Erro ao postar foto no Telegram: {e}. Tentando apenas texto...")
+            logging.warning(f"Erro ao postar foto por URL no Telegram: {e}")
 
     # Tentativa 2 (Fallback): Enviar mensagem de texto caso a foto falhe
     try:
@@ -872,7 +917,16 @@ if __name__ == "__main__":
         (df_produtos["preco_atual"].between(35, 500) * 25)
     )
     
-    df_ordenado_para_ia = df_produtos.sort_values(by="score_qualidade", ascending=False).head(100)
+    # Prepara o catálogo balanceado para a IA: Top Mercado Livre + Top Magalu
+    df_ml = df_produtos[df_produtos["loja"] == "Mercado Livre"].sort_values(by="score_qualidade", ascending=False).head(80)
+    df_magalu = df_produtos[df_produtos["loja"] == "Magalu"].sort_values(by="score_qualidade", ascending=False).head(40)
+    
+    if not df_ml.empty and not df_magalu.empty:
+        df_ordenado_para_ia = pd.concat([df_ml, df_magalu], ignore_index=True)
+    else:
+        df_ordenado_para_ia = df_produtos.sort_values(by="score_qualidade", ascending=False).head(120)
+
+    logging.info(f"Enviando {len(df_ordenado_para_ia)} candidatos filtrados para a IA escolher as 20 melhores (15 ML + 5 Magalu)...")
     json_input_data = gerar_json_para_ia(df_ordenado_para_ia.drop(columns=["score_qualidade"]))
 
     logging.info("\n=== CHAMANDO ALPHA-PROFIT (GEMINI) ===")
