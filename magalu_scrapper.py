@@ -22,6 +22,12 @@ try:
 except ImportError:
     PILLOW_DISPONIVEL = False
 
+try:
+    import tweepy
+    TWEEPY_DISPONIVEL = True
+except ImportError:
+    TWEEPY_DISPONIVEL = False
+
 # --- 1. Configuração do Logging e API ---
 
 logging.basicConfig(
@@ -681,6 +687,54 @@ def enviar_email_oportunidades(email_disparo, senha, email_destinatario, oportun
         logging.error(f"Erro no envio de e-mail: {e}")
 
 
+def baixar_imagem_jpeg(imagem_url):
+    """
+    Baixa a imagem do produto e converte qualquer formato (.webp, .png, etc.)
+    para bytes JPEG genuínos em memória via Pillow (compatível com Telegram e X).
+    """
+    if not imagem_url:
+        return None
+
+    urls_tentativa = [imagem_url]
+    if imagem_url.endswith(".webp"):
+        urls_tentativa.append(imagem_url[:-5] + ".jpg")
+    elif imagem_url.endswith(".jpg"):
+        urls_tentativa.append(imagem_url[:-4] + ".webp")
+
+    headers_img = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "image/avif,image/webp,image/apng,image/jpeg,image/png,*/*;q=0.8",
+        "Referer": "https://www.mercadolivre.com.br/" if "mlstatic" in imagem_url else "https://www.magazinevoce.com.br/"
+    }
+
+    for url_img_atual in urls_tentativa:
+        try:
+            img_resp = requests.get(url_img_atual, headers=headers_img, timeout=12)
+            if img_resp.status_code == 200 and len(img_resp.content) > 500:
+                img_bytes = img_resp.content
+                if PILLOW_DISPONIVEL:
+                    try:
+                        im = Image.open(BytesIO(img_bytes))
+                        if im.mode in ("RGBA", "LA", "P"):
+                            fundo = Image.new("RGB", im.size, (255, 255, 255))
+                            if im.mode == "P":
+                                im = im.convert("RGBA")
+                            fundo.paste(im, mask=im.split()[-1] if im.mode == "RGBA" else None)
+                            im = fundo
+                        else:
+                            im = im.convert("RGB")
+                        buf = BytesIO()
+                        im.save(buf, format="JPEG", quality=90)
+                        return buf.getvalue()
+                    except Exception as conv_err:
+                        logging.warning(f"Falha ao converter imagem via Pillow: {conv_err}")
+                return img_bytes
+        except Exception as e:
+            logging.warning(f"Erro ao baixar imagem ({url_img_atual}): {e}")
+
+    return None
+
+
 def enviar_oportunidade_telegram(bot_token, chat_id, oportunidade, imagem_url=None, preco_antigo=None):
     """
     Publica uma oferta individual no canal do Telegram com foto,
@@ -721,62 +775,28 @@ def enviar_oportunidade_telegram(bot_token, chat_id, oportunidade, imagem_url=No
 
     # Tentativa 1: Enviar com a Foto do produto em alta resolução
     if imagem_url:
-        # Método 1.1: Baixa os bytes da imagem e converte para JPEG real (via Pillow)
-        # Resolve 100% o problema das imagens .webp do Mercado Livre rejeitadas pelo Telegram
-        urls_tentativa = [imagem_url]
-        if imagem_url.endswith(".webp"):
-            urls_tentativa.append(imagem_url[:-5] + ".jpg")
-        elif imagem_url.endswith(".jpg"):
-            urls_tentativa.append(imagem_url[:-4] + ".webp")
-
-        headers_img = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "image/avif,image/webp,image/apng,image/jpeg,image/png,*/*;q=0.8",
-            "Referer": "https://www.mercadolivre.com.br/" if "mlstatic" in imagem_url else "https://www.magazinevoce.com.br/"
-        }
-
-        for url_img_atual in urls_tentativa:
+        # Método 1.1: Baixa e converte para JPEG real (via Pillow) antes do upload multipart
+        img_bytes = baixar_imagem_jpeg(imagem_url)
+        if img_bytes:
             try:
-                img_resp = requests.get(url_img_atual, headers=headers_img, timeout=12)
-                if img_resp.status_code == 200 and len(img_resp.content) > 500:
-                    img_bytes = img_resp.content
+                url_api = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+                files = {"photo": ("produto.jpg", img_bytes, "image/jpeg")}
+                data = {
+                    "chat_id": chat_id,
+                    "caption": texto_caption,
+                    "parse_mode": "HTML",
+                }
+                if reply_markup:
+                    data["reply_markup"] = json.dumps(reply_markup)
 
-                    # Converte WebP/PNG/qualquer formato para JPEG genuíno em memória
-                    if PILLOW_DISPONIVEL:
-                        try:
-                            im = Image.open(BytesIO(img_bytes))
-                            if im.mode in ("RGBA", "LA", "P"):
-                                fundo = Image.new("RGB", im.size, (255, 255, 255))
-                                if im.mode == "P":
-                                    im = im.convert("RGBA")
-                                fundo.paste(im, mask=im.split()[-1] if im.mode == "RGBA" else None)
-                                im = fundo
-                            else:
-                                im = im.convert("RGB")
-                            buf = BytesIO()
-                            im.save(buf, format="JPEG", quality=90)
-                            img_bytes = buf.getvalue()
-                        except Exception as conv_err:
-                            logging.warning(f"Falha ao converter imagem via Pillow: {conv_err}")
-
-                    url_api = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
-                    files = {"photo": ("produto.jpg", img_bytes, "image/jpeg")}
-                    data = {
-                        "chat_id": chat_id,
-                        "caption": texto_caption,
-                        "parse_mode": "HTML",
-                    }
-                    if reply_markup:
-                        data["reply_markup"] = json.dumps(reply_markup)
-
-                    resp = requests.post(url_api, data=data, files=files, timeout=15)
-                    if resp.status_code == 200:
-                        logging.info(f"Oportunidade postada com foto (JPEG convertido) no Telegram: {titulo[:35]}...")
-                        return True
-                    else:
-                        logging.warning(f"Telegram retornou status {resp.status_code} no upload da foto ({url_img_atual}): {resp.text}")
+                resp = requests.post(url_api, data=data, files=files, timeout=15)
+                if resp.status_code == 200:
+                    logging.info(f"Oportunidade postada com foto (JPEG convertido) no Telegram: {titulo[:35]}...")
+                    return True
+                else:
+                    logging.warning(f"Telegram retornou status {resp.status_code} no upload da foto: {resp.text}")
             except Exception as e:
-                logging.warning(f"Erro no download/upload da foto ({url_img_atual}): {e}")
+                logging.warning(f"Erro no upload da foto ao Telegram: {e}")
 
         # Método 1.2: Envio direto por URL (caso o upload direto falhe)
         try:
@@ -887,6 +907,154 @@ def disparar_canal_telegram(bot_token, chat_id, oportunidades_dict, df_todos_pro
 
     logging.info(f"🎉 Finalizado: {sucessos}/{len(oportunidades)} ofertas publicadas no Telegram com sucesso!")
     return skus_postados
+
+
+# --- 3.4. Publicação Automática no X (Twitter) ---
+
+def formatar_texto_tweet(oportunidade, preco_antigo=None):
+    """
+    Formata a oferta para o limite de 280 caracteres do X (Twitter),
+    com preço De/Por, desconto, link de afiliado, hashtags e convite pro Telegram.
+    """
+    copy = oportunidade.get("copy_venda", {})
+    titulo_raw = (copy.get("titulo") or oportunidade.get("nome_produto") or "Super Oferta!").strip()
+    titulo = (titulo_raw[:62] + "...") if len(titulo_raw) > 65 else titulo_raw
+
+    preco_atual = float(oportunidade.get("preco_atual", 0.0) or 0.0)
+    desconto = float(oportunidade.get("percentual_desconto", 0.0) or 0.0)
+    url_afiliado = (oportunidade.get("url_afiliado") or "").strip()
+    loja = oportunidade.get("loja") or ("Mercado Livre" if "mercadolivre" in url_afiliado.lower() else "Magalu")
+    badge = "🟡 [MERCADO LIVRE]" if "mercado" in loja.lower() else "🔵 [MAGALU]"
+
+    linhas = [f"{badge}", f"🔥 {titulo}", ""]
+    if preco_antigo and float(preco_antigo) > preco_atual:
+        linhas.append(f"❌ De: R$ {float(preco_antigo):.2f}")
+    if desconto >= 5:
+        linhas.append(f"✅ Por: R$ {preco_atual:.2f} ({desconto:.0f}% OFF!)")
+    else:
+        linhas.append(f"✅ Por: R$ {preco_atual:.2f}")
+
+    if url_afiliado:
+        linhas.extend(["", f"🛒 {url_afiliado}"])
+
+    linhas.extend([
+        "",
+        "📢 +Ofertas: t.me/promosgeektech",
+        "#Promocao #Oferta #Tech #Gamer"
+    ])
+    return "\n".join(linhas)
+
+
+def disparar_x_twitter(oportunidades_dict, df_todos_produtos=None, max_posts=4, intervalo_segundos=8):
+    """
+    Publica as melhores ofertas da rodada no X (Twitter) com foto JPEG e link de afiliado.
+    Por padrão posta as Top 4 por execução (12/dia nas 3 rodadas), ficando com folga
+    dentro do limite gratuito da API do X (Free Tier: 17 posts/24h e 500/mês).
+    """
+    if not TWEEPY_DISPONIVEL:
+        logging.warning("Biblioteca 'tweepy' não instalada. Pulando publicação no X (Twitter).")
+        return
+
+    api_key = os.getenv("X_API_KEY")
+    api_secret = os.getenv("X_API_SECRET")
+    access_token = os.getenv("X_ACCESS_TOKEN")
+    access_token_secret = os.getenv("X_ACCESS_TOKEN_SECRET")
+
+    if not all([api_key, api_secret, access_token, access_token_secret]):
+        logging.warning("Credenciais do X ausentes (X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET). Pulando envio para o X.")
+        return
+
+    oportunidades = oportunidades_dict.get("oportunidades", [])
+    if not oportunidades:
+        logging.info("Nenhuma oportunidade para publicar no X.")
+        return
+
+    try:
+        max_posts = int(os.getenv("X_MAX_POSTS", str(max_posts)))
+    except ValueError:
+        max_posts = 4
+
+    # Indexa imagem_url e preco_antigo do catálogo completo
+    mapa_por_sku, mapa_por_url, mapa_por_nome = {}, {}, {}
+    if df_todos_produtos is not None and not df_todos_produtos.empty:
+        for _, row in df_todos_produtos.iterrows():
+            info = {
+                "imagem_url": row.get("imagem_url"),
+                "preco_antigo": row.get("preco_antigo"),
+            }
+            sku = str(row.get("sku", ""))
+            url_af = str(row.get("url_afiliado", "") or "")
+            nome_norm = str(row.get("nome_produto", "") or "").strip().lower()[:40]
+            if sku:
+                mapa_por_sku[sku] = info
+            if url_af:
+                mapa_por_url[url_af] = info
+            if nome_norm:
+                mapa_por_nome[nome_norm] = info
+
+    # Seleciona as Top N ofertas mais chamativas (maior desconto + maior lucro estimado)
+    selecionadas = sorted(
+        oportunidades,
+        key=lambda op: (
+            float(op.get("percentual_desconto", 0.0) or 0.0) * 0.6 +
+            float(op.get("lucro_estimado_reais", 0.0) or 0.0) * 0.4
+        ),
+        reverse=True
+    )[:max_posts]
+
+    try:
+        # API v1.1 usada para upload de mídia (foto)
+        auth_v1 = tweepy.OAuth1UserHandler(api_key, api_secret, access_token, access_token_secret)
+        api_v1 = tweepy.API(auth_v1)
+
+        # API v2 usada para criação dos tweets
+        client_v2 = tweepy.Client(
+            consumer_key=api_key,
+            consumer_secret=api_secret,
+            access_token=access_token,
+            access_token_secret=access_token_secret
+        )
+    except Exception as e:
+        logging.error(f"Erro ao autenticar na API do X (Twitter): {e}")
+        return
+
+    logging.info(f"🐦 Iniciando publicação das Top {len(selecionadas)} ofertas no X (Twitter)...")
+    sucessos = 0
+
+    for i, op in enumerate(selecionadas):
+        sku = str(op.get("sku_selecionado", ""))
+        url_op = str(op.get("url_afiliado", "") or "")
+        nome_op = str(op.get("nome_produto", "") or "").strip().lower()[:40]
+        extra = mapa_por_sku.get(sku) or mapa_por_url.get(url_op) or mapa_por_nome.get(nome_op) or {}
+
+        imagem_url = op.get("imagem_url") or extra.get("imagem_url")
+        preco_antigo = op.get("preco_antigo") or extra.get("preco_antigo")
+        texto_tweet = formatar_texto_tweet(op, preco_antigo=preco_antigo)
+
+        media_ids = None
+        if imagem_url:
+            img_bytes = baixar_imagem_jpeg(imagem_url)
+            if img_bytes:
+                try:
+                    media = api_v1.media_upload(filename="produto.jpg", file=BytesIO(img_bytes))
+                    media_ids = [media.media_id]
+                except Exception as media_err:
+                    logging.warning(f"Falha no upload de imagem para o X (postando sem foto): {media_err}")
+
+        try:
+            client_v2.create_tweet(text=texto_tweet, media_ids=media_ids)
+            sucessos += 1
+            logging.info(f"Tweet {sucessos}/{len(selecionadas)} publicado no X com sucesso!")
+        except tweepy.TooManyRequests:
+            logging.warning("Limite de requisições da API do X (HTTP 429) atingido. Encerrando envios no X nesta rodada.")
+            break
+        except Exception as tweet_err:
+            logging.error(f"Erro ao publicar tweet no X: {tweet_err}")
+
+        if i < len(selecionadas) - 1:
+            time.sleep(intervalo_segundos)
+
+    logging.info(f"🐦 Finalizado no X: {sucessos}/{len(selecionadas)} tweets publicados!")
 
 
 # --- 3.5. Controle de Histórico Anti-Repetição (72 horas) ---
@@ -1101,8 +1269,16 @@ if __name__ == "__main__":
         intervalo_segundos=3
     )
 
+    # 🐦 DISPARO AUTOMÁTICO NO X (Twitter) — Top 4 ofertas da rodada com foto + link
+    disparar_x_twitter(
+        oportunidades_dict=oportunidades_dict,
+        df_todos_produtos=df_produtos,
+        max_posts=4,
+        intervalo_segundos=8
+    )
+
     # Atualiza o histórico de 72h para que os próximos disparos tragam novidades
     if skus_postados:
         salvar_historico_postados(historico_postados, skus_postados)
     
-    logging.info("Processo totalmente concluído! Pode ir ver seu e-mail e seu canal do Telegram.")
+    logging.info("Processo totalmente concluído! Confira seu e-mail, Telegram e X.")
