@@ -10,6 +10,7 @@ import google.generativeai as genai
 import smtplib
 from email.message import EmailMessage
 import csv 
+from urllib.parse import urlparse, parse_qs 
 
 # --- 1. Configuração do Logging e API ---
 
@@ -47,16 +48,18 @@ Eu fornecerei um [INPUT_DATA], que é uma string JSON representando um DataFrame
 * `preco_antigo`: Preço original (para cálculo de desconto).
 * `percentual_desconto`: (preco_antigo - preco_atual) / preco_antigo.
 * `categoria`: (Ex: 'Games', 'Hardware', 'Colecionáveis', 'Tecnologia').
-* `comissao_percent`: (Opcional, mas VITAL) O percentual de comissão do afiliado.
+* `seller_id`: Identificador do vendedor ('magazineluiza' para 1P direto ou nome da loja parceira para 3P).
+* `comissao_percent`: O percentual de comissão do afiliado (ex: 5.0 para 5%).
+* `lucro_estimado_reais`: O valor líquido estimado em R$ de comissão por venda (preco_atual * comissao_percent / 100).
 * `url_afiliado`: O link de compra.
 
 **4. PROCESSO DE DECISÃO ESTRATÉGICA (THOUGHT_PROCESS):**
 Seu objetivo é identificar as 10 (DEZ) "Oportunidades de Ouro". Você deve priorizar com base nesta hierarquia de decisão:
 
-* **Filtro 1: Aderência ao Ticket (Peso 40%)**: Selecione produtos onde `preco_atual` esteja na faixa de R$ 35,00 a R$ 500,00. Este é o nosso "Sweet Spot" de R$ 500.
-* **Filtro 2: Percepção de Valor (Peso 35%)**: Priorize produtos com o MAIOR `percentual_desconto`. A escassez e a oportunidade (promoções) são os maiores gatilhos para o público "mar aberto".
-* **Filtro 3: Potencial de Lucro (Peso 25%)**: Se `comissao_percent` estiver disponível, use-o como um desempate de alta prioridade. Maximize nosso R$ (Receita = preco_atual * comissao_percent).
-* **Filtro 4: Relevância (Qualificador)**: O produto deve ser Banal? NÃO. Deve ter apelo imediato para o nicho (Games, Geek, Tech). Um mouse gamer obscuro em promoção é MELHOR que um fone de ouvido genérico.
+* **Filtro 1: Aderência ao Ticket (Peso 35%)**: Selecione produtos onde `preco_atual` esteja na faixa de R$ 35,00 a R$ 500,00 (Sweet Spot de impulso).
+* **Filtro 2: Percepção de Valor (Peso 35%)**: Priorize produtos com o MAIOR `percentual_desconto`. A escassez e o desconto forte são os maiores gatilhos.
+* **Filtro 3: Potencial de Lucro Líquido (Peso 30%)**: Maximize a receita real do afiliado em R$ (`lucro_estimado_reais`). Um produto com bom desconto e comissão de R$ 25 é muito melhor que um que paga R$ 1.
+* **Filtro 4: Relevância (Qualificador)**: O produto deve ter apelo imediato para o nicho (Games, Geek, Tech, Smart House).
 
 **5. DIRETRIZ DE SAÍDA (OUTPUT):**
 Sua resposta deve ser um JSON ESTRITO. O JSON deve conter uma chave principal "oportunidades" que é um array de 10 objetos.
@@ -69,8 +72,10 @@ Sua resposta deve ser um JSON ESTRITO. O JSON deve conter uma chave principal "o
       "nome_produto": "Nome do Produto 1",
       "preco_atual": 49.90,
       "percentual_desconto": 30,
+      "comissao_percent": 5.0,
+      "lucro_estimado_reais": 2.50,
       "url_afiliado": "URL_AFILIADO_AQUI",
-      "razao_selecao": "Justificativa breve e lógica (Ex: 'Alto desconto + Sweet Spot de preço para hardware geek').",
+      "razao_selecao": "Justificativa breve e lógica (Ex: 'Alto desconto + comissão atrativa no sweet spot de hardware').",
       "copy_venda": {
         "titulo": "Título Magnético de Venda (Max 50 caracteres)",
         "corpo": "Texto de 1-2 frases focado em [Problema + Solução + Escassez].",
@@ -89,6 +94,97 @@ A copy **NÃO** é descritiva; ela é **PERSUASIVA**.
 """
 
 # --- 3. Funções de Scraping e Processamento ---
+
+# Tabela Oficial de Comissionamento (Parceiro Magalu)
+# Formato: "categoria_termo": (comissao_1p_magalu, comissao_3p_marketplace)
+TABELA_COMISSAO_MAGALU = {
+    "games": (6.0, 3.5),
+    "game": (6.0, 3.5),
+    "console": (4.5, 2.5),
+    "ps5": (4.5, 2.5),
+    "xbox": (4.5, 2.5),
+    "nintendo": (4.5, 2.5),
+    "informática": (4.0, 2.5),
+    "informatica": (4.0, 2.5),
+    "hardware": (4.5, 2.5),
+    "computador": (3.5, 2.0),
+    "notebook": (3.5, 2.0),
+    "monitor": (4.0, 2.5),
+    "periféricos": (6.5, 3.5),
+    "perifericos": (6.5, 3.5),
+    "mouse": (6.5, 3.5),
+    "teclado": (6.5, 3.5),
+    "headset": (6.5, 3.5),
+    "acessórios": (7.0, 4.0),
+    "acessorios": (7.0, 4.0),
+    "casa inteligente": (5.0, 3.0),
+    "áudio": (5.5, 3.5),
+    "audio": (5.5, 3.5),
+    "fone": (6.0, 3.5),
+    "caixa de som": (5.5, 3.5),
+    "smart house": (5.0, 3.0),
+    "eletrônicos": (3.5, 2.0),
+    "eletronicos": (3.5, 2.0),
+    "celulares": (2.5, 1.5),
+    "smartphones": (2.5, 1.5),
+    "telefonia": (2.5, 1.5),
+    "tv": (3.0, 2.0),
+    "eletroportáteis": (5.0, 3.0),
+    "eletrodomésticos": (3.5, 2.0),
+}
+
+
+def extrair_seller_id(product):
+    """Extrai o vendedor do produto (identifica se é estoque Magalu 1P ou Marketplace 3P)."""
+    seller = product.get("seller")
+    if isinstance(seller, dict):
+        s_id = seller.get("id") or seller.get("description")
+        if s_id:
+            return str(s_id).lower()
+    elif isinstance(seller, str) and seller.strip():
+        return seller.strip().lower()
+
+    s_id = product.get("sellerId") or product.get("seller_id")
+    if s_id:
+        return str(s_id).lower()
+
+    # Busca no query parameter da URL do produto
+    url = product.get("url", "")
+    if "seller_id=" in url:
+        try:
+            qs = parse_qs(urlparse(url).query)
+            if "seller_id" in qs and qs["seller_id"]:
+                return str(qs["seller_id"][0]).lower()
+        except Exception:
+            pass
+
+    return "magazineluiza"
+
+
+def calcular_comissao_magalu(categoria_nome, nome_produto, seller_id):
+    """
+    Calcula a porcentagem oficial de comissão do Parceiro Magalu
+    com base na categoria, nome e vendedor (1P Magalu vs 3P Marketplace).
+    """
+    is_1p = (seller_id in ["magazineluiza", "magalu", "magazine luiza"])
+    texto_busca = f"{categoria_nome or ''} {nome_produto or ''}".lower()
+
+    comissao_1p = None
+    comissao_3p = None
+
+    for chave, (taxa_1p, taxa_3p) in TABELA_COMISSAO_MAGALU.items():
+        if chave in texto_busca:
+            comissao_1p = taxa_1p
+            comissao_3p = taxa_3p
+            break
+
+    if comissao_1p is None:
+        comissao_1p = 4.0
+        comissao_3p = 2.5
+
+    taxa = comissao_1p if is_1p else comissao_3p
+    return round(float(taxa), 2)
+
 
 def extrair_dados_magalu_live(url):
     """
@@ -156,14 +252,21 @@ def extrair_dados_magalu_live(url):
             if percentual_desconto > 85:
                 continue
 
+            seller_id = extrair_seller_id(product)
+            categoria_nome = product.get("category", {}).get("name") or "Geral"
+            comissao_percent = calcular_comissao_magalu(categoria_nome, nome, seller_id)
+            lucro_estimado_reais = round(preco_atual * (comissao_percent / 100), 2)
+
             product_data = {
                 "sku": product.get("id"),
                 "nome_produto": nome,
                 "preco_atual": preco_atual,
                 "preco_antigo": preco_antigo,
                 "percentual_desconto": percentual_desconto,
-                "categoria": product.get("category", {}).get("name"),
-                "comissao_percent": None,  
+                "categoria": categoria_nome,
+                "seller_id": seller_id,
+                "comissao_percent": comissao_percent,
+                "lucro_estimado_reais": lucro_estimado_reais,
                 "url_afiliado": base_url + product.get("url") if product.get("url") else None,
             }
 
@@ -217,10 +320,25 @@ def formatar_oportunidades_html(oportunidades_dict):
     try:
         for i, op in enumerate(oportunidades_dict.get("oportunidades", [])):
             copy = op.get("copy_venda", {})
+            preco_atual = float(op.get('preco_atual', 0.0) or 0.0)
+            desconto = float(op.get('percentual_desconto', 0.0) or 0.0)
+            comissao = op.get('comissao_percent')
+            lucro = op.get('lucro_estimado_reais')
+
+            if lucro is None and comissao is not None:
+                lucro = round(preco_atual * (float(comissao) / 100), 2)
+
+            comissao_str = f"{comissao}%" if comissao is not None else "N/A"
+            lucro_str = f"R$ {lucro:.2f}" if lucro is not None else "N/A"
+
             html_out += f"""
             <div style="border: 1px solid #ddd; border-radius: 8px; margin-bottom: 20px; padding: 16px; background-color: #f9f9f9;">
                 <h3 style="color: #0086ff; margin-top: 0;">Oportunidade {i+1}: {op.get('nome_produto', 'N/A')}</h3>
-                <p><strong>Preço:</strong> R$ {op.get('preco_atual', 0.0):.2f} | <strong>Desconto:</strong> <span style="color: #c00;">{op.get('percentual_desconto', 0.0)}% OFF</span></p>
+                <p>
+                    <strong>Preço:</strong> R$ {preco_atual:.2f} | 
+                    <strong>Desconto:</strong> <span style="color: #c00;">{desconto}% OFF</span> | 
+                    <strong>Comissão Afiliado:</strong> <span style="color: #008000; font-weight: bold;">{comissao_str} (~{lucro_str}/venda)</span>
+                </p>
                 <div style="background-color: #fff; border: 1px dashed #ccc; padding: 12px; margin-top: 15px;">
                     <p><strong>Título:</strong> {copy.get('titulo', 'N/A')}</p>
                     <p><strong>Corpo:</strong> {copy.get('corpo', 'N/A')}</p>
@@ -337,9 +455,12 @@ if __name__ == "__main__":
     df_produtos = pd.concat(all_dfs, ignore_index=True)
     logging.info(f"SUCESSO TOTAL! {len(df_produtos)} itens raspados de todas as categorias!")
     
-    # Prepara o Top 100 para a Inteligência Artificial não se perder com excesso de dados
-    df_produtos["score_qualidade"] = (df_produtos["percentual_desconto"] * 0.6) + \
-                                     (df_produtos["preco_atual"].between(35, 500) * 40)
+    # Prepara o Top 100 ponderando Desconto + Lucro em R$ no bolso + Sweet Spot
+    df_produtos["score_qualidade"] = (
+        (df_produtos["percentual_desconto"] * 0.35) +
+        (df_produtos["lucro_estimado_reais"].clip(upper=80) * 0.40) +
+        (df_produtos["preco_atual"].between(35, 500) * 25)
+    )
     
     df_ordenado_para_ia = df_produtos.sort_values(by="score_qualidade", ascending=False).head(100)
     json_input_data = gerar_json_para_ia(df_ordenado_para_ia.drop(columns=["score_qualidade"]))
