@@ -161,6 +161,28 @@ def extrair_seller_id(product):
     return "magazineluiza"
 
 
+def extrair_imagem_produto(product):
+    """Extrai a URL da imagem do produto em alta resolução."""
+    img = product.get("image")
+    img_url = None
+    if isinstance(img, dict):
+        img_url = img.get("url") or img.get("src")
+    elif isinstance(img, str) and img.strip():
+        img_url = img.strip()
+    elif isinstance(product.get("images"), list) and len(product["images"]) > 0:
+        first = product["images"][0]
+        img_url = first.get("url") if isinstance(first, dict) else str(first)
+
+    if img_url and img_url.startswith("//"):
+        img_url = f"https:{img_url}"
+
+    # Melhora resolução de miniaturas para alta qualidade (800x600)
+    if img_url:
+        img_url = img_url.replace("/186x140/", "/800x600/").replace("/280x210/", "/800x600/")
+
+    return img_url
+
+
 def calcular_comissao_magalu(categoria_nome, nome_produto, seller_id):
     """
     Calcula a porcentagem oficial de comissão do Parceiro Magalu
@@ -256,6 +278,7 @@ def extrair_dados_magalu_live(url):
             categoria_nome = product.get("category", {}).get("name") or "Geral"
             comissao_percent = calcular_comissao_magalu(categoria_nome, nome, seller_id)
             lucro_estimado_reais = round(preco_atual * (comissao_percent / 100), 2)
+            imagem_url = extrair_imagem_produto(product)
 
             product_data = {
                 "sku": product.get("id"),
@@ -267,6 +290,7 @@ def extrair_dados_magalu_live(url):
                 "seller_id": seller_id,
                 "comissao_percent": comissao_percent,
                 "lucro_estimado_reais": lucro_estimado_reais,
+                "imagem_url": imagem_url,
                 "url_afiliado": base_url + product.get("url") if product.get("url") else None,
             }
 
@@ -410,6 +434,128 @@ def enviar_email_oportunidades(email_disparo, senha, email_destinatario, oportun
         logging.error(f"Erro no envio de e-mail: {e}")
 
 
+def enviar_oportunidade_telegram(bot_token, chat_id, oportunidade, imagem_url=None, preco_antigo=None):
+    """
+    Publica uma oferta individual no canal do Telegram com foto,
+    copy persuasiva, preços formatados e botão de compra direto.
+    """
+    copy = oportunidade.get("copy_venda", {})
+    titulo = copy.get("titulo") or oportunidade.get("nome_produto", "Super Oferta!")
+    corpo = copy.get("corpo", "")
+    cta = copy.get("cta", "Garanta o seu com desconto!")
+    preco_atual = float(oportunidade.get("preco_atual", 0.0) or 0.0)
+    desconto = float(oportunidade.get("percentual_desconto", 0.0) or 0.0)
+    url_afiliado = oportunidade.get("url_afiliado", "")
+
+    # Monta a legenda formatada com HTML suportado pelo Telegram
+    texto_caption = f"🔥 <b>{titulo}</b>\n\n"
+    if corpo:
+        texto_caption += f"{corpo}\n\n"
+
+    if preco_antigo and float(preco_antigo) > preco_atual:
+        texto_caption += f"❌ De: <s>R$ {float(preco_antigo):.2f}</s>\n"
+
+    texto_caption += f"✅ <b>Por apenas: R$ {preco_atual:.2f}</b>\n"
+    texto_caption += f"📉 <b>Desconto: {desconto:.0f}% OFF</b>\n\n"
+    texto_caption += f"⚡ <i>{cta}</i>"
+
+    # Botão de Ação Inline (Leva direto pro seu link de afiliado)
+    reply_markup = None
+    if url_afiliado:
+        reply_markup = {
+            "inline_keyboard": [
+                [{"text": "🛒 GARANTIR OFERTA NO MAGALU", "url": url_afiliado}]
+            ]
+        }
+
+    # Tentativa 1: Enviar com a Foto do produto em alta resolução
+    if imagem_url:
+        try:
+            url_api = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+            payload = {
+                "chat_id": chat_id,
+                "photo": imagem_url,
+                "caption": texto_caption,
+                "parse_mode": "HTML",
+            }
+            if reply_markup:
+                payload["reply_markup"] = json.dumps(reply_markup)
+
+            resp = requests.post(url_api, data=payload, timeout=12)
+            if resp.status_code == 200:
+                logging.info(f"Oportunidade postada com foto no Telegram: {titulo[:35]}...")
+                return True
+            else:
+                logging.warning(f"Telegram retornou status {resp.status_code} na foto: {resp.text}. Tentando em texto...")
+        except Exception as e:
+            logging.warning(f"Erro ao postar foto no Telegram: {e}. Tentando apenas texto...")
+
+    # Tentativa 2 (Fallback): Enviar mensagem de texto caso a foto falhe
+    try:
+        url_api = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": texto_caption,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": False
+        }
+        if reply_markup:
+            payload["reply_markup"] = json.dumps(reply_markup)
+
+        resp = requests.post(url_api, data=payload, timeout=12)
+        if resp.status_code == 200:
+            logging.info(f"Oportunidade postada em texto no Telegram: {titulo[:35]}...")
+            return True
+        else:
+            logging.error(f"Erro ao postar texto no Telegram ({resp.status_code}): {resp.text}")
+            return False
+    except Exception as e:
+        logging.error(f"Erro na requisição sendMessage do Telegram: {e}")
+        return False
+
+
+def disparar_canal_telegram(bot_token, chat_id, oportunidades_dict, df_todos_produtos=None, intervalo_segundos=3):
+    """
+    Percorre a lista de 10 oportunidades e dispara uma a uma no canal do Telegram,
+    com um espaçamento de segurança para evitar rate limits.
+    """
+    if not bot_token or not chat_id:
+        logging.warning("Credenciais do Telegram ausentes (TELEGRAM_BOT_TOKEN ou TELEGRAM_CHAT_ID). Pulando envio para o canal.")
+        return
+
+    oportunidades = oportunidades_dict.get("oportunidades", [])
+    if not oportunidades:
+        logging.info("Nenhuma oportunidade para enviar ao Telegram.")
+        return
+
+    # Indexa imagem_url e preco_antigo por SKU
+    mapa_produtos = {}
+    if df_todos_produtos is not None and not df_todos_produtos.empty:
+        for _, row in df_todos_produtos.iterrows():
+            sku = str(row.get("sku", ""))
+            mapa_produtos[sku] = {
+                "imagem_url": row.get("imagem_url"),
+                "preco_antigo": row.get("preco_antigo")
+            }
+
+    logging.info(f"🚀 Iniciando postagem de {len(oportunidades)} ofertas no Canal do Telegram...")
+    sucessos = 0
+
+    for i, op in enumerate(oportunidades):
+        sku = str(op.get("sku_selecionado", ""))
+        extra = mapa_produtos.get(sku, {})
+        imagem_url = op.get("imagem_url") or extra.get("imagem_url")
+        preco_antigo = op.get("preco_antigo") or extra.get("preco_antigo")
+
+        if enviar_oportunidade_telegram(bot_token, chat_id, op, imagem_url=imagem_url, preco_antigo=preco_antigo):
+            sucessos += 1
+
+        if i < len(oportunidades) - 1:
+            time.sleep(intervalo_segundos)
+
+    logging.info(f"🎉 Finalizado: {sucessos}/{len(oportunidades)} ofertas publicadas no Telegram com sucesso!")
+
+
 # --- 4. O Maestro da Orquestra (Bloco Principal Modificado) ---
 
 if __name__ == "__main__":
@@ -483,5 +629,14 @@ if __name__ == "__main__":
         oportunidades_dict=oportunidades_dict,
         df_todos_produtos=df_produtos 
     )
+
+    # 🚀 DISPARO AUTOMÁTICO NO TELEGRAM (Canal de Ofertas / Grupo VIP)
+    disparar_canal_telegram(
+        bot_token=os.getenv("TELEGRAM_BOT_TOKEN"),
+        chat_id=os.getenv("TELEGRAM_CHAT_ID"),
+        oportunidades_dict=oportunidades_dict,
+        df_todos_produtos=df_produtos,
+        intervalo_segundos=3
+    )
     
-    logging.info("Processo totalmente concluído! Pode ir ver seu e-mail.")
+    logging.info("Processo totalmente concluído! Pode ir ver seu e-mail e seu canal do Telegram.")
