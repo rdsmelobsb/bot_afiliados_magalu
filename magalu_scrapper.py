@@ -913,12 +913,13 @@ def disparar_canal_telegram(bot_token, chat_id, oportunidades_dict, df_todos_pro
 
 def formatar_texto_tweet(oportunidade, preco_antigo=None):
     """
-    Formata a oferta para o limite de 280 caracteres do X (Twitter),
-    com preço De/Por, desconto, link de afiliado, hashtags e convite pro Telegram.
+    Formata a oferta no MODO ECONÔMICO para o X (Twitter) (<280 chars):
+    SEM URLs ou domínios no texto (evita a taxa de US$ 0,20/post por link,
+    reduzindo o custo para ~US$ 0,015/post e melhorando o alcance orgânico).
     """
     copy = oportunidade.get("copy_venda", {})
     titulo_raw = (copy.get("titulo") or oportunidade.get("nome_produto") or "Super Oferta!").strip()
-    titulo = (titulo_raw[:62] + "...") if len(titulo_raw) > 65 else titulo_raw
+    titulo = (titulo_raw[:85] + "...") if len(titulo_raw) > 88 else titulo_raw
 
     preco_atual = float(oportunidade.get("preco_atual", 0.0) or 0.0)
     desconto = float(oportunidade.get("percentual_desconto", 0.0) or 0.0)
@@ -934,22 +935,19 @@ def formatar_texto_tweet(oportunidade, preco_antigo=None):
     else:
         linhas.append(f"✅ Por: R$ {preco_atual:.2f}")
 
-    if url_afiliado:
-        linhas.extend(["", f"🛒 {url_afiliado}"])
-
     linhas.extend([
         "",
-        "📢 +Ofertas: t.me/promosgeektech",
+        "📲 Link da oferta no nosso Telegram: @promosgeektech (link na bio!)",
         "#Promocao #Oferta #Tech #Gamer"
     ])
     return "\n".join(linhas)
 
 
-def disparar_x_twitter(oportunidades_dict, df_todos_produtos=None, max_posts=4, intervalo_segundos=8):
+def disparar_x_twitter(oportunidades_dict, df_todos_produtos=None, max_posts=2, intervalo_segundos=8):
     """
-    Publica as melhores ofertas da rodada no X (Twitter) com foto JPEG e link de afiliado.
-    Por padrão posta as Top 4 por execução (12/dia nas 3 rodadas), ficando com folga
-    dentro do limite gratuito da API do X (Free Tier: 17 posts/24h e 500/mês).
+    Publica as melhores ofertas da rodada no X (Twitter) em MODO ECONÔMICO:
+    foto JPEG + oferta sem URLs no texto (~US$ 0,015/post no Pay-Per-Use).
+    Por padrão posta as Top 2 ofertas por execução (6/dia nas 3 rodadas).
     """
     if not TWEEPY_DISPONIVEL:
         logging.warning("Biblioteca 'tweepy' não instalada. Pulando publicação no X (Twitter).")
@@ -972,7 +970,7 @@ def disparar_x_twitter(oportunidades_dict, df_todos_produtos=None, max_posts=4, 
     try:
         max_posts = int(os.getenv("X_MAX_POSTS", str(max_posts)))
     except ValueError:
-        max_posts = 4
+        max_posts = 2
 
     # Indexa imagem_url e preco_antigo do catálogo completo
     mapa_por_sku, mapa_por_url, mapa_por_nome = {}, {}, {}
@@ -1269,11 +1267,11 @@ if __name__ == "__main__":
         intervalo_segundos=3
     )
 
-    # 🐦 DISPARO AUTOMÁTICO NO X (Twitter) — Top 4 ofertas da rodada com foto + link
+    # 🐦 DISPARO AUTOMÁTICO NO X (Twitter) — Modo Econômico (Top 2 sem URL = ~US$ 0,015/post)
     disparar_x_twitter(
         oportunidades_dict=oportunidades_dict,
         df_todos_produtos=df_produtos,
-        max_posts=4,
+        max_posts=2,
         intervalo_segundos=8
     )
 
