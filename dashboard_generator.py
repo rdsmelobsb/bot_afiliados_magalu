@@ -43,6 +43,7 @@ def registrar_metricas_execucao(
     raspados_magalu=0,
     postados_telegram=0,
     postados_threads=0,
+    postados_facebook=0,
     postados_x=0,
     membros_telegram=None,
     oportunidades_dict=None,
@@ -72,6 +73,7 @@ def registrar_metricas_execucao(
         "raspados_magalu": int(raspados_magalu or 0),
         "postados_telegram": int(postados_telegram or 0),
         "postados_threads": int(postados_threads or 0),
+        "postados_facebook": int(postados_facebook or 0),
         "postados_x": int(postados_x or 0),
         "membros_telegram": membros_telegram,
         "custo_x_usd": custo_x_usd,
@@ -213,7 +215,7 @@ def gerar_dashboard_html(historico=None, arquivo_saida=DASHBOARD_ARQUIVO):
     <header>
       <div>
         <h1>📊 Alpha-Profit — Painel de Acompanhamento</h1>
-        <div class="subtitle">Telegram (@promosgeektech) • Threads • X (Modo Econômico) | Gerado em {atualizado_em}</div>
+        <div class="subtitle">Telegram (@promosgeektech) • Threads • Facebook • X (Modo Econômico) | Gerado em {atualizado_em}</div>
       </div>
       <div class="tabs">
         <button class="tab-btn active" onclick="switchTab('bot', this)">🤖 Operação do Bot</button>
@@ -246,6 +248,7 @@ def gerar_dashboard_html(historico=None, arquivo_saida=DASHBOARD_ARQUIVO):
                 <th class="num">Raspados (ML / Magalu)</th>
                 <th class="num">Telegram</th>
                 <th class="num">Threads</th>
+                <th class="num">Facebook</th>
                 <th class="num">X</th>
                 <th class="num">Membros TG</th>
                 <th class="num">Custo X</th>
@@ -350,6 +353,7 @@ def gerar_dashboard_html(historico=None, arquivo_saida=DASHBOARD_ARQUIVO):
       const totalRuns = BOT_HISTORY.length;
       const totalTG = BOT_HISTORY.reduce((a, r) => a + (r.postados_telegram || 0), 0);
       const totalThreads = BOT_HISTORY.reduce((a, r) => a + (r.postados_threads || 0), 0);
+      const totalFB = BOT_HISTORY.reduce((a, r) => a + (r.postados_facebook || 0), 0);
       const totalX = BOT_HISTORY.reduce((a, r) => a + (r.postados_x || 0), 0);
       const totalXUsd = getTotalBotXCostUSD();
 
@@ -366,8 +370,8 @@ def gerar_dashboard_html(historico=None, arquivo_saida=DASHBOARD_ARQUIVO):
         </div>
         <div class="card">
           <div class="kpi-label">Ofertas Publicadas</div>
-          <div class="kpi-value text-green">${{(totalTG + totalThreads + totalX).toLocaleString("pt-BR")}}</div>
-          <div class="kpi-sub">TG: ${{totalTG}} • Threads: ${{totalThreads}} • X: ${{totalX}}</div>
+          <div class="kpi-value text-green">${{(totalTG + totalThreads + totalFB + totalX).toLocaleString("pt-BR")}}</div>
+          <div class="kpi-sub">TG: ${{totalTG}} • Threads: ${{totalThreads}} • FB: ${{totalFB}} • X: ${{totalX}}</div>
         </div>
         <div class="card">
           <div class="kpi-label">Execuções Registradas</div>
@@ -402,7 +406,7 @@ def gerar_dashboard_html(historico=None, arquivo_saida=DASHBOARD_ARQUIVO):
       // Tabela de execuções
       const tbody = document.getElementById("bot-table");
       if (!BOT_HISTORY.length) {{
-        tbody.innerHTML = `<tr><td colspan="8" class="empty">Nenhuma execução registrada ainda. Rode o workflow no GitHub Actions para começar a coletar métricas!</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="9" class="empty">Nenhuma execução registrada ainda. Rode o workflow no GitHub Actions para começar a coletar métricas!</td></tr>`;
       }} else {{
         tbody.innerHTML = [...BOT_HISTORY].reverse().slice(0, 40).map(r => {{
           const badgeClass = r.status === "OK" ? "badge-ok" : (r.status === "PARCIAL" ? "badge-warn" : "badge-err");
@@ -412,6 +416,7 @@ def gerar_dashboard_html(historico=None, arquivo_saida=DASHBOARD_ARQUIVO):
               <td class="num">${{r.raspados_ml}} / ${{r.raspados_magalu}}</td>
               <td class="num">${{r.postados_telegram}}</td>
               <td class="num">${{r.postados_threads}}</td>
+              <td class="num">${{r.postados_facebook ?? 0}}</td>
               <td class="num">${{r.postados_x}}</td>
               <td class="num">${{r.membros_telegram ?? "—"}}</td>
               <td class="num">${{fmtUSD(r.custo_x_usd)}}</td>

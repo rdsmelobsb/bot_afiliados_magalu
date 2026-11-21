@@ -1252,6 +1252,202 @@ def disparar_threads(oportunidades_dict, df_todos_produtos=None, max_posts=5, in
     return sucessos
 
 
+# --- 3.4.6. Publicação Automática na Página do Facebook (Foto Limpa + Link no 1º Comentário) ---
+
+def formatar_texto_facebook(oportunidade, preco_antigo=None):
+    """
+    Formata a legenda da oferta para Página do Facebook SEM link externo no post principal
+    (estratégia anti-restrição de alcance da Meta; o link vai automaticamente no 1º comentário).
+    """
+    copy = oportunidade.get("copy_venda", {})
+    titulo = (copy.get("titulo") or oportunidade.get("nome_produto") or "Super Oferta!").strip()
+    corpo = (copy.get("corpo") or "").strip()
+    cta = (copy.get("cta") or "Aproveite antes que o preço suba!").strip()
+    url_afiliado = (oportunidade.get("url_afiliado") or "").strip()
+    preco_atual = float(oportunidade.get("preco_atual", 0.0) or 0.0)
+    desconto = float(oportunidade.get("percentual_desconto", 0.0) or 0.0)
+    loja = oportunidade.get("loja") or ("Mercado Livre" if "mercadolivre" in url_afiliado.lower() else "Magalu")
+    badge = "🟡 [MERCADO LIVRE]" if "mercado" in loja.lower() else "🔵 [MAGALU]"
+
+    linhas = [f"{badge}", f"🔥 {titulo}", ""]
+    if corpo:
+        linhas.extend([corpo, ""])
+
+    if preco_antigo and float(preco_antigo) > preco_atual:
+        linhas.append(f"❌ De: R$ {float(preco_antigo):.2f}")
+    if desconto >= 5:
+        linhas.append(f"✅ Por apenas: R$ {preco_atual:.2f} ({desconto:.0f}% OFF!)")
+    else:
+        linhas.append(f"✅ Por apenas: R$ {preco_atual:.2f}")
+
+    linhas.extend([
+        "",
+        f"⚡ {cta}",
+        "👇 Link direto da oferta no 1º comentário!",
+        "📢 Mais promoções diárias no Telegram: @promosgeektech",
+        "",
+        "#Promocao #Oferta #Desconto #Tech #Gamer"
+    ])
+    return "\n".join(linhas)
+
+
+def disparar_facebook_page(oportunidades_dict, df_todos_produtos=None, max_posts=5, intervalo_segundos=6):
+    """
+    Publica as melhores ofertas na Página do Facebook via Meta Graph API (100% gratuito):
+      1. Sobe foto JPEG real (via Pillow, funciona para ML e Magalu) com legenda limpa (SEM link).
+      2. Publica o link de afiliado automaticamente no 1º comentário para maximizar alcance orgânico.
+    Descobre o PAGE_ID automaticamente via /me usando apenas FACEBOOK_PAGE_TOKEN.
+    """
+    page_token = os.getenv("FACEBOOK_PAGE_TOKEN")
+    if not page_token:
+        logging.warning("Credencial FACEBOOK_PAGE_TOKEN ausente. Pulando publicação na Página do Facebook.")
+        return 0
+
+    oportunidades = oportunidades_dict.get("oportunidades", [])
+    if not oportunidades:
+        logging.info("Nenhuma oportunidade para publicar no Facebook.")
+        return 0
+
+    try:
+        max_posts = int(os.getenv("FACEBOOK_MAX_POSTS", str(max_posts)))
+    except ValueError:
+        max_posts = 5
+
+    # Descobre o PAGE_ID automaticamente via /me caso não esteja no ambiente
+    page_id = os.getenv("FACEBOOK_PAGE_ID")
+    if not page_id:
+        try:
+            me_resp = requests.get(
+                "https://graph.facebook.com/v21.0/me",
+                params={"fields": "id,name", "access_token": page_token},
+                timeout=12
+            )
+            if me_resp.status_code == 200:
+                me_data = me_resp.json()
+                page_id = me_data.get("id")
+                logging.info(f"📘 Facebook autenticado na Página '{me_data.get('name', 'desconhecida')}' (ID: {page_id})")
+            else:
+                logging.error(f"Erro ao autenticar no Facebook (/me): {me_resp.status_code} - {me_resp.text}")
+                return 0
+        except Exception as e:
+            logging.error(f"Exceção ao consultar /me do Facebook: {e}")
+            return 0
+
+    # Indexa imagem_url e preco_antigo do catálogo completo
+    mapa_por_sku, mapa_por_url, mapa_por_nome = {}, {}, {}
+    if df_todos_produtos is not None and not df_todos_produtos.empty:
+        for _, row in df_todos_produtos.iterrows():
+            info = {
+                "imagem_url": row.get("imagem_url"),
+                "preco_antigo": row.get("preco_antigo"),
+            }
+            sku = str(row.get("sku", ""))
+            url_af = str(row.get("url_afiliado", "") or "")
+            nome_norm = str(row.get("nome_produto", "") or "").strip().lower()[:40]
+            if sku:
+                mapa_por_sku[sku] = info
+            if url_af:
+                mapa_por_url[url_af] = info
+            if nome_norm:
+                mapa_por_nome[nome_norm] = info
+
+    # Seleciona as Top N ofertas (desconto + lucro estimado)
+    selecionadas = sorted(
+        oportunidades,
+        key=lambda op: (
+            float(op.get("percentual_desconto", 0.0) or 0.0) * 0.6 +
+            float(op.get("lucro_estimado_reais", 0.0) or 0.0) * 0.4
+        ),
+        reverse=True
+    )[:max_posts]
+
+    logging.info(f"📘 Iniciando publicação das Top {len(selecionadas)} ofertas na Página do Facebook...")
+    sucessos = 0
+
+    for i, op in enumerate(selecionadas):
+        sku = str(op.get("sku_selecionado", ""))
+        url_op = str(op.get("url_afiliado", "") or "").strip()
+        nome_op = str(op.get("nome_produto", "") or "").strip().lower()[:40]
+        extra = mapa_por_sku.get(sku) or mapa_por_url.get(url_op) or mapa_por_nome.get(nome_op) or {}
+
+        imagem_url = op.get("imagem_url") or extra.get("imagem_url")
+        preco_antigo = op.get("preco_antigo") or extra.get("preco_antigo")
+        legenda = formatar_texto_facebook(op, preco_antigo=preco_antigo)
+
+        post_id = None
+
+        # Passo 1A: Publica com foto JPEG (upload multipart direto — funciona até para .webp do ML)
+        if imagem_url:
+            img_bytes = baixar_imagem_jpeg(imagem_url)
+            if img_bytes:
+                try:
+                    resp_photo = requests.post(
+                        f"https://graph.facebook.com/v21.0/{page_id}/photos",
+                        data={
+                            "caption": legenda,
+                            "published": "true",
+                            "access_token": page_token,
+                        },
+                        files={"source": ("produto.jpg", img_bytes, "image/jpeg")},
+                        timeout=20
+                    )
+                    if resp_photo.status_code == 200:
+                        data_p = resp_photo.json()
+                        post_id = data_p.get("post_id") or data_p.get("id")
+                    else:
+                        logging.warning(f"Facebook /photos falhou ({resp_photo.status_code}), tentando /feed: {resp_photo.text}")
+                except Exception as e:
+                    logging.warning(f"Erro ao subir foto no Facebook: {e}")
+
+        # Passo 1B (Fallback): Publica texto no /feed caso a foto falhe
+        if not post_id:
+            try:
+                resp_feed = requests.post(
+                    f"https://graph.facebook.com/v21.0/{page_id}/feed",
+                    data={
+                        "message": legenda,
+                        "access_token": page_token,
+                    },
+                    timeout=15
+                )
+                if resp_feed.status_code == 200:
+                    post_id = resp_feed.json().get("id")
+                else:
+                    logging.error(f"Erro ao publicar no /feed do Facebook ({resp_feed.status_code}): {resp_feed.text}")
+                    continue
+            except Exception as e:
+                logging.error(f"Exceção ao publicar no /feed do Facebook: {e}")
+                continue
+
+        sucessos += 1
+        logging.info(f"Facebook {sucessos}/{len(selecionadas)} publicado (post_id: {post_id})!")
+
+        # Passo 2: Publica o link direto de afiliado no 1º comentário (mantém alcance orgânico alto)
+        if post_id and url_op:
+            time.sleep(2)
+            try:
+                resp_comm = requests.post(
+                    f"https://graph.facebook.com/v21.0/{post_id}/comments",
+                    data={
+                        "message": f"🛒 Garanta a oferta aqui: {url_op}",
+                        "access_token": page_token,
+                    },
+                    timeout=12
+                )
+                if resp_comm.status_code == 200:
+                    logging.info(f"💬 1º comentário com link publicado no post {post_id}!")
+                else:
+                    logging.warning(f"Não foi possível comentar link no Facebook ({resp_comm.status_code}): {resp_comm.text}")
+            except Exception as e:
+                logging.warning(f"Exceção ao comentar link no Facebook: {e}")
+
+        if i < len(selecionadas) - 1:
+            time.sleep(intervalo_segundos)
+
+    logging.info(f"📘 Finalizado no Facebook: {sucessos}/{len(selecionadas)} posts publicados!")
+    return sucessos
+
+
 # --- 3.5. Controle de Histórico Anti-Repetição (72 horas) ---
 
 HISTORICO_ARQUIVO = "historico_postados.json"
@@ -1480,6 +1676,14 @@ if __name__ == "__main__":
         intervalo_segundos=6
     ) or 0
 
+    # 📘 DISPARO AUTOMÁTICO NA PÁGINA DO FACEBOOK — 100% Gratuito (Top 5 foto limpa + link no 1º comentário)
+    posts_facebook = disparar_facebook_page(
+        oportunidades_dict=oportunidades_dict,
+        df_todos_produtos=df_produtos,
+        max_posts=5,
+        intervalo_segundos=6
+    ) or 0
+
     # Atualiza o histórico de 72h para que os próximos disparos tragam novidades
     if skus_postados:
         salvar_historico_postados(historico_postados, skus_postados)
@@ -1502,6 +1706,7 @@ if __name__ == "__main__":
             raspados_magalu=qtd_magalu,
             postados_telegram=len(skus_postados),
             postados_threads=posts_threads,
+            postados_facebook=posts_facebook,
             postados_x=posts_x,
             membros_telegram=membros_tg,
             oportunidades_dict=oportunidades_dict,
@@ -1510,4 +1715,4 @@ if __name__ == "__main__":
     except Exception as dash_err:
         logging.warning(f"Falha ao atualizar dashboard de acompanhamento: {dash_err}")
     
-    logging.info("Processo totalmente concluído! Confira seu e-mail, Telegram, X, Threads e o Dashboard HTML.")
+    logging.info("Processo totalmente concluído! Confira seu e-mail, Telegram, X, Threads, Facebook e o Dashboard HTML.")
