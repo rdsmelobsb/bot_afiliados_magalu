@@ -5,3 +5,4 @@ __pycache__/
 venv/
 .venv/
 historico_postados.json
+historico_metricas.json

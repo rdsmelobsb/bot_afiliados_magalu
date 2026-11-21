@@ -28,12 +28,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas requests beautifulsoup4 google-generativeai pillow tweepy
 
-      - name: '3.5. Restaurar Histórico Anti-Repetição (72h)'
+      - name: '3.5. Restaurar Históricos (Anti-Repetição 72h + Métricas)'
         uses: actions/cache/restore@v4
         with:
-          path: historico_postados.json
-          key: historico-postados-${{ github.run_id }}
+          path: |
+            historico_postados.json
+            historico_metricas.json
+          key: historico-bot-${{ github.run_id }}
           restore-keys: |
+            historico-bot-
             historico-postados-
 
       - name: '4. Executar o Script (magalu_scrapper.py)'
@@ -50,20 +53,24 @@ jobs:
           X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_TOKEN_SECRET }}
           THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
 
-      - name: '4.5. Salvar Histórico Anti-Repetição'
+      - name: '4.5. Salvar Históricos (Anti-Repetição + Métricas)'
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: historico_postados.json
-          key: historico-postados-${{ github.run_id }}
+          path: |
+            historico_postados.json
+            historico_metricas.json
+          key: historico-bot-${{ github.run_id }}
 
-      - name: '5. Salvar Artefatos (Resultados)'
+      - name: '5. Salvar Artefatos (Dashboard HTML + Resultados)'
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: alpha-profit-resultados
           path: |
+            dashboard_acompanhamento.html
+            historico_metricas.json
             produtos_extraidos.csv
             insumo_ia.json
             oportunidades_alpha_profit.json
-          retention-days: 7 # Guarda os resultados por 7 dias
+          retention-days: 14 # Guarda o dashboard e resultados por 14 dias

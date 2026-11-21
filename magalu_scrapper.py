@@ -1053,6 +1053,7 @@ def disparar_x_twitter(oportunidades_dict, df_todos_produtos=None, max_posts=2, 
             time.sleep(intervalo_segundos)
 
     logging.info(f"🐦 Finalizado no X: {sucessos}/{len(selecionadas)} tweets publicados!")
+    return sucessos
 
 
 # --- 3.4.5. Publicação Automática no Threads (Meta) ---
@@ -1248,6 +1249,7 @@ def disparar_threads(oportunidades_dict, df_todos_produtos=None, max_posts=5, in
             time.sleep(intervalo_segundos)
 
     logging.info(f"🧵 Finalizado no Threads: {sucessos}/{len(selecionadas)} posts publicados!")
+    return sucessos
 
 
 # --- 3.5. Controle de Histórico Anti-Repetição (72 horas) ---
@@ -1463,23 +1465,49 @@ if __name__ == "__main__":
     )
 
     # 🐦 DISPARO AUTOMÁTICO NO X (Twitter) — Modo Econômico (Top 2 sem URL = ~US$ 0,015/post)
-    disparar_x_twitter(
+    posts_x = disparar_x_twitter(
         oportunidades_dict=oportunidades_dict,
         df_todos_produtos=df_produtos,
         max_posts=2,
         intervalo_segundos=8
-    )
+    ) or 0
 
     # 🧵 DISPARO AUTOMÁTICO NO THREADS (Meta) — 100% Gratuito (Top 5 com link direto + foto/preview)
-    disparar_threads(
+    posts_threads = disparar_threads(
         oportunidades_dict=oportunidades_dict,
         df_todos_produtos=df_produtos,
         max_posts=5,
         intervalo_segundos=6
-    )
+    ) or 0
 
     # Atualiza o histórico de 72h para que os próximos disparos tragam novidades
     if skus_postados:
         salvar_historico_postados(historico_postados, skus_postados)
+
+    # 📊 TELEMETRIA & DASHBOARD HTML DE ACOMPANHAMENTO (Automático + Painel de Vendas Reais)
+    try:
+        from dashboard_generator import (
+            obter_membros_telegram,
+            registrar_metricas_execucao,
+            gerar_dashboard_html,
+        )
+        membros_tg = obter_membros_telegram(
+            os.getenv("TELEGRAM_BOT_TOKEN"),
+            os.getenv("TELEGRAM_CHAT_ID"),
+        )
+        qtd_ml = int((df_produtos["loja"] == "Mercado Livre").sum()) if "loja" in df_produtos.columns else 0
+        qtd_magalu = int((df_produtos["loja"] == "Magalu").sum()) if "loja" in df_produtos.columns else 0
+        hist_metricas = registrar_metricas_execucao(
+            raspados_ml=qtd_ml,
+            raspados_magalu=qtd_magalu,
+            postados_telegram=len(skus_postados),
+            postados_threads=posts_threads,
+            postados_x=posts_x,
+            membros_telegram=membros_tg,
+            oportunidades_dict=oportunidades_dict,
+        )
+        gerar_dashboard_html(hist_metricas)
+    except Exception as dash_err:
+        logging.warning(f"Falha ao atualizar dashboard de acompanhamento: {dash_err}")
     
-    logging.info("Processo totalmente concluído! Confira seu e-mail, Telegram, X e Threads.")
+    logging.info("Processo totalmente concluído! Confira seu e-mail, Telegram, X, Threads e o Dashboard HTML.")
