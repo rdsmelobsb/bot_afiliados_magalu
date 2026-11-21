@@ -1313,8 +1313,26 @@ def disparar_facebook_page(oportunidades_dict, df_todos_produtos=None, max_posts
     except ValueError:
         max_posts = 5
 
-    # Descobre o PAGE_ID automaticamente via /me caso não esteja no ambiente
+    # Descobre automaticamente o PAGE_ID e garante que estamos usando um Token de Página
+    # (Se o secret for um Token de Usuário com pages_show_list, troca automaticamente via /me/accounts)
     page_id = os.getenv("FACEBOOK_PAGE_ID")
+    try:
+        acc_resp = requests.get(
+            "https://graph.facebook.com/v21.0/me/accounts",
+            params={"fields": "id,name,access_token", "access_token": page_token},
+            timeout=12
+        )
+        if acc_resp.status_code == 200:
+            paginas = acc_resp.json().get("data", [])
+            if paginas:
+                escolhida = next((p for p in paginas if page_id and str(p.get("id")) == str(page_id)), paginas[0])
+                page_id = escolhida.get("id")
+                if escolhida.get("access_token"):
+                    page_token = escolhida["access_token"]
+                logging.info(f"📘 Token de Usuário convertido automaticamente para a Página '{escolhida.get('name', 'desconhecida')}' (ID: {page_id})")
+    except Exception as e:
+        logging.warning(f"Aviso ao verificar /me/accounts do Facebook: {e}")
+
     if not page_id:
         try:
             me_resp = requests.get(
