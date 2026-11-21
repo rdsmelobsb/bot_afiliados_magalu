@@ -1055,6 +1055,201 @@ def disparar_x_twitter(oportunidades_dict, df_todos_produtos=None, max_posts=2, 
     logging.info(f"🐦 Finalizado no X: {sucessos}/{len(selecionadas)} tweets publicados!")
 
 
+# --- 3.4.5. Publicação Automática no Threads (Meta) ---
+
+def formatar_texto_threads(oportunidade, preco_antigo=None):
+    """
+    Formata a oferta para o Threads (limite de 500 caracteres),
+    incluindo copy persuasiva, preço De/Por, desconto, link de afiliado direto
+    (zero taxa de link no Threads!) e chamada para o canal do Telegram.
+    """
+    copy = oportunidade.get("copy_venda", {})
+    titulo = (copy.get("titulo") or oportunidade.get("nome_produto") or "Super Oferta!").strip()
+    corpo = (copy.get("corpo") or "").strip()
+    url_afiliado = (oportunidade.get("url_afiliado") or "").strip()
+    preco_atual = float(oportunidade.get("preco_atual", 0.0) or 0.0)
+    desconto = float(oportunidade.get("percentual_desconto", 0.0) or 0.0)
+    loja = oportunidade.get("loja") or ("Mercado Livre" if "mercadolivre" in url_afiliado.lower() else "Magalu")
+    badge = "🟡 [MERCADO LIVRE]" if "mercado" in loja.lower() else "🔵 [MAGALU]"
+
+    linhas = [f"{badge}", f"🔥 {titulo}", ""]
+    if corpo:
+        linhas.append(corpo[:140])
+        linhas.append("")
+
+    if preco_antigo and float(preco_antigo) > preco_atual:
+        linhas.append(f"❌ De: R$ {float(preco_antigo):.2f}")
+    if desconto >= 5:
+        linhas.append(f"✅ Por: R$ {preco_atual:.2f} ({desconto:.0f}% OFF!)")
+    else:
+        linhas.append(f"✅ Por: R$ {preco_atual:.2f}")
+
+    if url_afiliado:
+        linhas.extend(["", f"🛒 Compre aqui: {url_afiliado}"])
+
+    linhas.extend(["", "📢 Mais ofertas no Telegram: @promosgeektech"])
+    texto = "\n".join(linhas)
+    return texto[:495]
+
+
+def disparar_threads(oportunidades_dict, df_todos_produtos=None, max_posts=5, intervalo_segundos=6):
+    """
+    Publica as melhores ofertas da rodada no Threads via API oficial da Meta (100% gratuita).
+    Descobre o THREADS_USER_ID automaticamente via /me usando apenas THREADS_ACCESS_TOKEN.
+    Tenta publicar com foto (JPEG/PNG) e faz fallback automático para TEXT + link_attachment.
+    """
+    access_token = os.getenv("THREADS_ACCESS_TOKEN")
+    if not access_token:
+        logging.warning("Credencial THREADS_ACCESS_TOKEN ausente. Pulando publicação no Threads.")
+        return
+
+    oportunidades = oportunidades_dict.get("oportunidades", [])
+    if not oportunidades:
+        logging.info("Nenhuma oportunidade para publicar no Threads.")
+        return
+
+    try:
+        max_posts = int(os.getenv("THREADS_MAX_POSTS", str(max_posts)))
+    except ValueError:
+        max_posts = 5
+
+    # Descobre o USER_ID automaticamente pelo endpoint /me caso não esteja no ambiente
+    user_id = os.getenv("THREADS_USER_ID")
+    if not user_id:
+        try:
+            me_resp = requests.get(
+                "https://graph.threads.net/v1.0/me",
+                params={"fields": "id,username", "access_token": access_token},
+                timeout=12
+            )
+            if me_resp.status_code == 200:
+                me_data = me_resp.json()
+                user_id = me_data.get("id")
+                logging.info(f"🧵 Threads autenticado como @{me_data.get('username', 'desconhecido')} (ID: {user_id})")
+            else:
+                logging.error(f"Erro ao autenticar no Threads (/me): {me_resp.status_code} - {me_resp.text}")
+                return
+        except Exception as e:
+            logging.error(f"Exceção ao consultar /me do Threads: {e}")
+            return
+
+    # Indexa imagem_url e preco_antigo do catálogo completo
+    mapa_por_sku, mapa_por_url, mapa_por_nome = {}, {}, {}
+    if df_todos_produtos is not None and not df_todos_produtos.empty:
+        for _, row in df_todos_produtos.iterrows():
+            info = {
+                "imagem_url": row.get("imagem_url"),
+                "preco_antigo": row.get("preco_antigo"),
+            }
+            sku = str(row.get("sku", ""))
+            url_af = str(row.get("url_afiliado", "") or "")
+            nome_norm = str(row.get("nome_produto", "") or "").strip().lower()[:40]
+            if sku:
+                mapa_por_sku[sku] = info
+            if url_af:
+                mapa_por_url[url_af] = info
+            if nome_norm:
+                mapa_por_nome[nome_norm] = info
+
+    # Seleciona as Top N ofertas (priorizando desconto + lucro estimado)
+    selecionadas = sorted(
+        oportunidades,
+        key=lambda op: (
+            float(op.get("percentual_desconto", 0.0) or 0.0) * 0.6 +
+            float(op.get("lucro_estimado_reais", 0.0) or 0.0) * 0.4
+        ),
+        reverse=True
+    )[:max_posts]
+
+    logging.info(f"🧵 Iniciando publicação das Top {len(selecionadas)} ofertas no Threads...")
+    sucessos = 0
+
+    for i, op in enumerate(selecionadas):
+        sku = str(op.get("sku_selecionado", ""))
+        url_op = str(op.get("url_afiliado", "") or "")
+        nome_op = str(op.get("nome_produto", "") or "").strip().lower()[:40]
+        extra = mapa_por_sku.get(sku) or mapa_por_url.get(url_op) or mapa_por_nome.get(nome_op) or {}
+
+        imagem_url = op.get("imagem_url") or extra.get("imagem_url")
+        preco_antigo = op.get("preco_antigo") or extra.get("preco_antigo")
+        texto_post = formatar_texto_threads(op, preco_antigo=preco_antigo)
+
+        creation_id = None
+        usou_imagem = False
+
+        # Passo 1A: Tenta criar container de IMAGEM se a URL for JPEG/PNG pública
+        if imagem_url and any(imagem_url.lower().split("?")[0].endswith(ext) for ext in (".jpg", ".jpeg", ".png")):
+            try:
+                resp_img = requests.post(
+                    f"https://graph.threads.net/v1.0/{user_id}/threads",
+                    data={
+                        "media_type": "IMAGE",
+                        "image_url": imagem_url,
+                        "text": texto_post,
+                        "access_token": access_token,
+                    },
+                    timeout=15
+                )
+                if resp_img.status_code == 200 and resp_img.json().get("id"):
+                    creation_id = resp_img.json()["id"]
+                    usou_imagem = True
+                else:
+                    logging.warning(f"Threads container IMAGE falhou ({resp_img.status_code}), usando fallback TEXT: {resp_img.text}")
+            except Exception as e:
+                logging.warning(f"Erro ao criar container IMAGE no Threads: {e}")
+
+        # Passo 1B (Fallback): Cria container de TEXTO com link_attachment
+        if not creation_id:
+            try:
+                payload_txt = {
+                    "media_type": "TEXT",
+                    "text": texto_post,
+                    "access_token": access_token,
+                }
+                if url_op:
+                    payload_txt["link_attachment"] = url_op
+                resp_txt = requests.post(
+                    f"https://graph.threads.net/v1.0/{user_id}/threads",
+                    data=payload_txt,
+                    timeout=15
+                )
+                if resp_txt.status_code == 200 and resp_txt.json().get("id"):
+                    creation_id = resp_txt.json()["id"]
+                else:
+                    logging.error(f"Erro ao criar container TEXT no Threads ({resp_txt.status_code}): {resp_txt.text}")
+                    continue
+            except Exception as e:
+                logging.error(f"Exceção ao criar container TEXT no Threads: {e}")
+                continue
+
+        # Aguarda a Meta processar a mídia antes de publicar
+        time.sleep(5 if usou_imagem else 2)
+
+        # Passo 2: Publica o container
+        try:
+            pub_resp = requests.post(
+                f"https://graph.threads.net/v1.0/{user_id}/threads_publish",
+                data={
+                    "creation_id": creation_id,
+                    "access_token": access_token,
+                },
+                timeout=15
+            )
+            if pub_resp.status_code == 200:
+                sucessos += 1
+                tipo = "foto" if usou_imagem else "texto+link"
+                logging.info(f"Threads {sucessos}/{len(selecionadas)} publicado ({tipo}) com sucesso!")
+            else:
+                logging.error(f"Erro ao publicar no Threads ({pub_resp.status_code}): {pub_resp.text}")
+        except Exception as e:
+            logging.error(f"Exceção ao publicar no Threads: {e}")
+
+        if i < len(selecionadas) - 1:
+            time.sleep(intervalo_segundos)
+
+    logging.info(f"🧵 Finalizado no Threads: {sucessos}/{len(selecionadas)} posts publicados!")
+
+
 # --- 3.5. Controle de Histórico Anti-Repetição (72 horas) ---
 
 HISTORICO_ARQUIVO = "historico_postados.json"
@@ -1275,8 +1470,16 @@ if __name__ == "__main__":
         intervalo_segundos=8
     )
 
+    # 🧵 DISPARO AUTOMÁTICO NO THREADS (Meta) — 100% Gratuito (Top 5 com link direto + foto/preview)
+    disparar_threads(
+        oportunidades_dict=oportunidades_dict,
+        df_todos_produtos=df_produtos,
+        max_posts=5,
+        intervalo_segundos=6
+    )
+
     # Atualiza o histórico de 72h para que os próximos disparos tragam novidades
     if skus_postados:
         salvar_historico_postados(historico_postados, skus_postados)
     
-    logging.info("Processo totalmente concluído! Confira seu e-mail, Telegram e X.")
+    logging.info("Processo totalmente concluído! Confira seu e-mail, Telegram, X e Threads.")
