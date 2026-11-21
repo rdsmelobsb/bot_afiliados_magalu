@@ -16,3 +16,10 @@
   - Nunca usar `img.get("src")` cegamente: ignorar placeholders `data:image/...` (priorizar `data-src` / `data-srcset` / `srcset` em `img.poly-component__picture`).
   - Nunca renomear `.webp` para `.jpg` na URL (`mlstatic.com` retorna 404). Baixar os bytes originais e converter para **JPEG real em memória via Pillow** antes do upload multipart para `sendPhoto`.
 - **Anti-Repetição:** Manter `historico_postados.json` (janela de 72h) persistido via `actions/cache@v4` no GitHub Actions e listado no `.gitignore`.
+- **X (Twitter) — Modo Econômico (Pay-Per-Use):**
+  - Nunca incluir URLs ou domínios (nem `t.me/...`) no texto dos tweets, pois o X cobra **US$ 0,20/post** por links contra **US$ 0,015/post** sem links.
+  - Manter o limite padrão de **Top 2 ofertas por execução** (6/dia) com foto JPEG e chamada para `@promosgeektech (link na bio!)`.
+- **Threads (Meta) — Publicação Gratuita:**
+  - Publicar **Top 5 ofertas por execução** (15/dia) com link direto de afiliado (API gratuita, sem taxa de link).
+  - Descobrir `THREADS_USER_ID` automaticamente via `GET https://graph.threads.net/v1.0/me` usando apenas `THREADS_ACCESS_TOKEN`.
+  - Usar `media_type=IMAGE` apenas para URLs `.jpg`/`.jpeg`/`.png`; fazer fallback automático para `media_type=TEXT` + `link_attachment` quando a imagem for `.webp` ou falhar.
