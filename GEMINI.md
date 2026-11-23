@@ -23,3 +23,14 @@
   - Publicar **Top 5 ofertas por execução** (15/dia) com link direto de afiliado (API gratuita, sem taxa de link).
   - Descobrir `THREADS_USER_ID` automaticamente via `GET https://graph.threads.net/v1.0/me` usando apenas `THREADS_ACCESS_TOKEN`.
   - Usar `media_type=IMAGE` apenas para URLs `.jpg`/`.jpeg`/`.png`; fazer fallback automático para `media_type=TEXT` + `link_attachment` quando a imagem for `.webp` ou falhar.
+- **Página do Facebook (`Gamestore`) — Alcance & Nicho:**
+  - Publicar **Top 5 no Feed** (foto JPEG limpa **sem URL** + link de afiliado automático no **1º comentário**), **1 Reel MP4** e **2 Stories 9:16** por execução (100% gratuito).
+  - Sempre validar/converter `FACEBOOK_PAGE_TOKEN` via `/v21.0/me/accounts` para evitar erro `403 publish_actions is deprecated` caso o secret seja um User Token.
+  - Manter `_bonus_nicho_gamestore` ativo para priorizar **Games, Hardware Gamer e Áudio** nos Reels, Stories e Feed da `Gamestore`, penalizando itens de casa (*fechadura, cadeado, vitrola*).
+- **Reels Animados (HyperFrames + `edge-tts` — Custo R$ 0):**
+  - Usar **HeyGen HyperFrames** (HTML/GSAP 1080×1920) como motor principal e **Pillow + `ffmpeg`** como fallback automático.
+  - **Invariante HyperFrames:** aplicar `class="clip"` apenas no container raiz `#stage` (nunca em filhos flex individuais), evitando sobreposição por `position: absolute`.
+  - Usar a voz **`pt-BR-ThalitaMultilingualNeural`** (`edge-tts`) e ajustar a duração do MP4 dinamicamente via `ffprobe` (`duração + 0,8s`) para nunca cortar a fala.
+- **Radar de Preços (Modo Híbrido 30d) & Dashboard Offline:**
+  - Persistir `historico_precos.json` e `historico_metricas.json` no `actions/cache@v4` (ambos no `.gitignore`) e priorizar mínimas históricas sem reduzir o volume de 20 ofertas.
+  - Manter `dashboard_generator.py` usando apenas stdlib (`urllib.request`) para funcionar localmente no Windows sem dependências extras.
