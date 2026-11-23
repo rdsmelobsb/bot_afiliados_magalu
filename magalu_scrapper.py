@@ -753,7 +753,15 @@ def enviar_oportunidade_telegram(bot_token, chat_id, oportunidade, imagem_url=No
     btn_text = "🛒 VER NO MERCADO LIVRE" if "mercado" in loja.lower() else "🛒 GARANTIR OFERTA NO MAGALU"
 
     # Monta a legenda formatada com HTML suportado pelo Telegram
-    texto_caption = f"{badge}\n🔥 <b>{titulo}</b>\n\n"
+    selo_radar = ""
+    if oportunidade.get("menor_preco_historico"):
+        media_ant = float(oportunidade.get("preco_medio_historico") or 0.0)
+        if media_ant > preco_atual:
+            selo_radar = f"📉 <b>MENOR PREÇO REGISTRADO!</b> (Média anterior: R$ {media_ant:.2f})\n"
+        else:
+            selo_radar = "📉 <b>MENOR PREÇO REGISTRADO!</b>\n"
+
+    texto_caption = f"{badge}\n{selo_radar}🔥 <b>{titulo}</b>\n\n"
     if corpo:
         texto_caption += f"{corpo}\n\n"
 
@@ -927,7 +935,14 @@ def formatar_texto_tweet(oportunidade, preco_antigo=None):
     loja = oportunidade.get("loja") or ("Mercado Livre" if "mercadolivre" in url_afiliado.lower() else "Magalu")
     badge = "🟡 [MERCADO LIVRE]" if "mercado" in loja.lower() else "🔵 [MAGALU]"
 
-    linhas = [f"{badge}", f"🔥 {titulo}", ""]
+    linhas = [f"{badge}"]
+    if oportunidade.get("menor_preco_historico"):
+        media_ant = float(oportunidade.get("preco_medio_historico") or 0.0)
+        if media_ant > preco_atual:
+            linhas.append(f"📉 MENOR PREÇO REGISTRADO! (Média anterior: R$ {media_ant:.2f})")
+        else:
+            linhas.append("📉 MENOR PREÇO REGISTRADO!")
+    linhas.extend([f"🔥 {titulo}", ""])
     if preco_antigo and float(preco_antigo) > preco_atual:
         linhas.append(f"❌ De: R$ {float(preco_antigo):.2f}")
     if desconto >= 5:
@@ -990,10 +1005,12 @@ def disparar_x_twitter(oportunidades_dict, df_todos_produtos=None, max_posts=2, 
             if nome_norm:
                 mapa_por_nome[nome_norm] = info
 
-    # Seleciona as Top N ofertas mais chamativas (maior desconto + maior lucro estimado)
+    # Seleciona as Top N ofertas mais chamativas (priorizando Quedas Reais do Radar + desconto + lucro)
     selecionadas = sorted(
         oportunidades,
         key=lambda op: (
+            (100.0 if op.get("menor_preco_historico") else 0.0) +
+            float(op.get("queda_real_percent", 0.0) or 0.0) * 2.0 +
             float(op.get("percentual_desconto", 0.0) or 0.0) * 0.6 +
             float(op.get("lucro_estimado_reais", 0.0) or 0.0) * 0.4
         ),
@@ -1073,7 +1090,14 @@ def formatar_texto_threads(oportunidade, preco_antigo=None):
     loja = oportunidade.get("loja") or ("Mercado Livre" if "mercadolivre" in url_afiliado.lower() else "Magalu")
     badge = "🟡 [MERCADO LIVRE]" if "mercado" in loja.lower() else "🔵 [MAGALU]"
 
-    linhas = [f"{badge}", f"🔥 {titulo}", ""]
+    linhas = [f"{badge}"]
+    if oportunidade.get("menor_preco_historico"):
+        media_ant = float(oportunidade.get("preco_medio_historico") or 0.0)
+        if media_ant > preco_atual:
+            linhas.append(f"📉 MENOR PREÇO REGISTRADO! (Média anterior: R$ {media_ant:.2f})")
+        else:
+            linhas.append("📉 MENOR PREÇO REGISTRADO!")
+    linhas.extend([f"🔥 {titulo}", ""])
     if corpo:
         linhas.append(corpo[:140])
         linhas.append("")
@@ -1152,10 +1176,12 @@ def disparar_threads(oportunidades_dict, df_todos_produtos=None, max_posts=5, in
             if nome_norm:
                 mapa_por_nome[nome_norm] = info
 
-    # Seleciona as Top N ofertas (priorizando desconto + lucro estimado)
+    # Seleciona as Top N ofertas (priorizando Quedas Reais do Radar + desconto + lucro estimado)
     selecionadas = sorted(
         oportunidades,
         key=lambda op: (
+            (100.0 if op.get("menor_preco_historico") else 0.0) +
+            float(op.get("queda_real_percent", 0.0) or 0.0) * 2.0 +
             float(op.get("percentual_desconto", 0.0) or 0.0) * 0.6 +
             float(op.get("lucro_estimado_reais", 0.0) or 0.0) * 0.4
         ),
@@ -1269,7 +1295,14 @@ def formatar_texto_facebook(oportunidade, preco_antigo=None):
     loja = oportunidade.get("loja") or ("Mercado Livre" if "mercadolivre" in url_afiliado.lower() else "Magalu")
     badge = "🟡 [MERCADO LIVRE]" if "mercado" in loja.lower() else "🔵 [MAGALU]"
 
-    linhas = [f"{badge}", f"🔥 {titulo}", ""]
+    linhas = [f"{badge}"]
+    if oportunidade.get("menor_preco_historico"):
+        media_ant = float(oportunidade.get("preco_medio_historico") or 0.0)
+        if media_ant > preco_atual:
+            linhas.append(f"📉 MENOR PREÇO REGISTRADO! (Média anterior: R$ {media_ant:.2f})")
+        else:
+            linhas.append("📉 MENOR PREÇO REGISTRADO!")
+    linhas.extend([f"🔥 {titulo}", ""])
     if corpo:
         linhas.extend([corpo, ""])
 
@@ -1369,10 +1402,12 @@ def disparar_facebook_page(oportunidades_dict, df_todos_produtos=None, max_posts
             if nome_norm:
                 mapa_por_nome[nome_norm] = info
 
-    # Seleciona as Top N ofertas (desconto + lucro estimado)
+    # Seleciona as Top N ofertas (Quedas Reais do Radar + desconto + lucro estimado)
     selecionadas = sorted(
         oportunidades,
         key=lambda op: (
+            (100.0 if op.get("menor_preco_historico") else 0.0) +
+            float(op.get("queda_real_percent", 0.0) or 0.0) * 2.0 +
             float(op.get("percentual_desconto", 0.0) or 0.0) * 0.6 +
             float(op.get("lucro_estimado_reais", 0.0) or 0.0) * 0.4
         ),
@@ -1543,6 +1578,8 @@ def disparar_facebook_reels_stories(oportunidades_dict, df_todos_produtos=None, 
     top_ofertas = sorted(
         oportunidades,
         key=lambda op: (
+            (100.0 if op.get("menor_preco_historico") else 0.0) +
+            float(op.get("queda_real_percent", 0.0) or 0.0) * 2.0 +
             float(op.get("percentual_desconto", 0.0) or 0.0) * 0.6 +
             float(op.get("lucro_estimado_reais", 0.0) or 0.0) * 0.4
         ),
@@ -1746,12 +1783,159 @@ def salvar_historico_postados(historico_atual, novos_skus):
         logging.warning(f"Erro ao salvar {HISTORICO_ARQUIVO}: {e}")
 
 
+# --- 3.6. Radar de Queda Real de Preço (Histórico 30 dias — Modo Híbrido) ---
+
+HISTORICO_PRECOS_ARQUIVO = "historico_precos.json"
+
+
+def carregar_historico_precos(dias_validade=30):
+    """Carrega o histórico de preços dos últimos 30 dias (mínima e média real por SKU)."""
+    if not os.path.exists(HISTORICO_PRECOS_ARQUIVO):
+        return {}
+    try:
+        with open(HISTORICO_PRECOS_ARQUIVO, "r", encoding="utf-8") as f:
+            dados = json.load(f)
+        limite = (datetime.now() - timedelta(days=dias_validade)).strftime("%Y-%m-%d")
+        ativo = {
+            sku: info for sku, info in dados.items()
+            if isinstance(info, dict) and str(info.get("updated", "")) >= limite
+        }
+        logging.info(f"📉 Radar de Preços carregado: {len(ativo)} SKUs monitorados nos últimos {dias_validade} dias.")
+        return ativo
+    except Exception as e:
+        logging.warning(f"Não foi possível ler {HISTORICO_PRECOS_ARQUIVO}: {e}")
+        return {}
+
+
+def enriquecer_e_atualizar_historico_precos(df_produtos, historico_precos):
+    """
+    Modo Híbrido: compara o preço de hoje com o histórico real de cada SKU (sem reduzir volume),
+    marcando quedas reais e mínimas históricas, e atualiza historico_precos.json.
+    """
+    hoje = datetime.now().strftime("%Y-%m-%d")
+    quedas_reais = []
+    minimas_hist = []
+    medias_hist = []
+
+    qtd_minimas = 0
+    qtd_quedas = 0
+
+    for _, row in df_produtos.iterrows():
+        sku = str(row.get("sku", "")).strip()
+        preco = float(row.get("preco_atual", 0.0) or 0.0)
+        queda_pct = 0.0
+        is_minima = False
+        media_ant = 0.0
+
+        if sku and preco > 0:
+            reg = historico_precos.get(sku)
+            if reg and reg.get("count", 0) >= 2:
+                avg_ant = float(reg.get("avg", preco) or preco)
+                min_ant = float(reg.get("min", preco) or preco)
+                media_ant = round(avg_ant, 2)
+                if avg_ant > preco:
+                    queda_pct = round(((avg_ant - preco) / avg_ant) * 100.0, 1)
+                if preco <= min_ant * 0.99 and queda_pct >= 5.0:
+                    is_minima = True
+                    qtd_minimas += 1
+                if queda_pct >= 5.0:
+                    qtd_quedas += 1
+
+                # Atualiza histórico com média incremental (peso suavizado até 30 amostras)
+                cnt = min(int(reg.get("count", 1)) + 1, 30)
+                novo_avg = round(((avg_ant * (cnt - 1)) + preco) / cnt, 2)
+                historico_precos[sku] = {
+                    "min": round(min(min_ant, preco), 2),
+                    "avg": novo_avg,
+                    "count": cnt,
+                    "last": round(preco, 2),
+                    "updated": hoje,
+                }
+            elif reg:
+                avg_ant = float(reg.get("avg", preco) or preco)
+                min_ant = float(reg.get("min", preco) or preco)
+                historico_precos[sku] = {
+                    "min": round(min(min_ant, preco), 2),
+                    "avg": round((avg_ant + preco) / 2.0, 2),
+                    "count": int(reg.get("count", 1)) + 1,
+                    "last": round(preco, 2),
+                    "updated": hoje,
+                }
+            else:
+                historico_precos[sku] = {
+                    "min": round(preco, 2),
+                    "avg": round(preco, 2),
+                    "count": 1,
+                    "last": round(preco, 2),
+                    "updated": hoje,
+                }
+
+        quedas_reais.append(queda_pct)
+        minimas_hist.append(is_minima)
+        medias_hist.append(media_ant)
+
+    df_produtos["queda_real_percent"] = quedas_reais
+    df_produtos["menor_preco_historico"] = minimas_hist
+    df_produtos["preco_medio_historico"] = medias_hist
+
+    # Mantém no máximo 5.000 SKUs mais recentes para o cache ficar leve
+    if len(historico_precos) > 5000:
+        ordenados = sorted(historico_precos.items(), key=lambda kv: kv[1].get("updated", ""), reverse=True)[:5000]
+        historico_precos = dict(ordenados)
+
+    try:
+        with open(HISTORICO_PRECOS_ARQUIVO, "w", encoding="utf-8") as f:
+            json.dump(historico_precos, f, ensure_ascii=False)
+        logging.info(
+            f"📉 Radar de Preços atualizado ({len(historico_precos)} SKUs). "
+            f"Nesta rodada: {qtd_minimas} mínimas históricas e {qtd_quedas} quedas reais (>=5%)!"
+        )
+    except Exception as e:
+        logging.warning(f"Erro ao salvar {HISTORICO_PRECOS_ARQUIVO}: {e}")
+
+    return df_produtos
+
+
+def enriquecer_oportunidades_com_radar(oportunidades_dict, df_produtos):
+    """Propaga os sinais do Radar de Queda Real para o JSON retornado pela IA."""
+    if not oportunidades_dict or "oportunidades" not in oportunidades_dict or df_produtos is None or df_produtos.empty:
+        return oportunidades_dict
+
+    mapa_sku, mapa_url, mapa_nome = {}, {}, {}
+    for _, row in df_produtos.iterrows():
+        info = {
+            "menor_preco_historico": bool(row.get("menor_preco_historico", False)),
+            "queda_real_percent": float(row.get("queda_real_percent", 0.0) or 0.0),
+            "preco_medio_historico": float(row.get("preco_medio_historico", 0.0) or 0.0),
+        }
+        sku = str(row.get("sku", ""))
+        url_af = str(row.get("url_afiliado", "") or "")
+        nome_norm = str(row.get("nome_produto", "") or "").strip().lower()[:40]
+        if sku:
+            mapa_sku[sku] = info
+        if url_af:
+            mapa_url[url_af] = info
+        if nome_norm:
+            mapa_nome[nome_norm] = info
+
+    for op in oportunidades_dict.get("oportunidades", []):
+        sku = str(op.get("sku_selecionado", ""))
+        url_op = str(op.get("url_afiliado", "") or "")
+        nome_op = str(op.get("nome_produto", "") or "").strip().lower()[:40]
+        extra = mapa_sku.get(sku) or mapa_url.get(url_op) or mapa_nome.get(nome_op)
+        if extra:
+            op.update(extra)
+
+    return oportunidades_dict
+
+
 # --- 4. O Maestro da Orquestra (Bloco Principal Modificado) ---
 
 if __name__ == "__main__":
 
-    # Carrega histórico das últimas 72h para não repetir as mesmas ofertas
+    # Carrega histórico das últimas 72h (anti-repetição) e histórico de 30 dias (Radar de Preços)
     historico_postados = carregar_historico_postados(horas_validade=72)
+    historico_precos = carregar_historico_precos(dias_validade=30)
 
     POOL_MAGALU = [
         "https://www.magazinevoce.com.br/magazinedealz/informatica/l/in/",
@@ -1857,6 +2041,9 @@ if __name__ == "__main__":
     df_produtos = pd.concat(all_dfs, ignore_index=True).drop_duplicates(subset=["sku"])
     total_bruto = len(df_produtos)
 
+    # Atualiza o Radar de Queda Real de Preço com TODOS os itens raspados hoje (antes do filtro 72h)
+    df_produtos = enriquecer_e_atualizar_historico_precos(df_produtos, historico_precos)
+
     # Filtra fora produtos já postados nas últimas 72h (Anti-Repetição)
     if historico_postados:
         df_ineditos = df_produtos[~df_produtos["sku"].astype(str).isin(historico_postados.keys())]
@@ -1868,9 +2055,11 @@ if __name__ == "__main__":
 
     logging.info(f"SUCESSO TOTAL! {len(df_produtos)} itens elegíveis de Magalu e Mercado Livre!")
     
-    # Prepara o Score ponderando Desconto + Lucro em R$ + Sweet Spot + Jitter de diversidade
+    # Prepara o Score ponderando Queda Real (Radar 30d) + Desconto + Lucro em R$ + Sweet Spot + Jitter
     jitter = [random.uniform(0, 8) for _ in range(len(df_produtos))]
     df_produtos["score_qualidade"] = (
+        (df_produtos["menor_preco_historico"].astype(int) * 45) +
+        (df_produtos["queda_real_percent"].clip(upper=40) * 1.5) +
         (df_produtos["percentual_desconto"] * 0.35) +
         (df_produtos["lucro_estimado_reais"].clip(upper=80) * 0.40) +
         (df_produtos["preco_atual"].between(35, 500) * 25) +
@@ -1895,6 +2084,7 @@ if __name__ == "__main__":
     # Tentamos ler a resposta da IA. Se der erro, 'oportunidades_dict' fica vazio.
     try:
         oportunidades_dict = json.loads(json_final_output)
+        oportunidades_dict = enriquecer_oportunidades_com_radar(oportunidades_dict, df_produtos)
     except Exception as e:
         logging.warning(f"Erro ao interpretar JSON da IA. Ativando Contingência. Erro: {e}")
         oportunidades_dict = {}

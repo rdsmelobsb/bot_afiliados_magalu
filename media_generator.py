@@ -255,7 +255,8 @@ def gerar_locucao_ptbr(
     preco_atual = float(oportunidade.get("preco_atual", 0.0) or 0.0)
     desconto = float(oportunidade.get("percentual_desconto", 0.0) or 0.0)
 
-    partes = [f"Alerta de oferta! {nome_limpo}"]
+    abertura = "Menor preço registrado!" if oportunidade.get("menor_preco_historico") else "Alerta de oferta!"
+    partes = [f"{abertura} {nome_limpo}"]
     if preco_antigo and float(preco_antigo) > preco_atual:
         partes.append(f"caiu de {int(round(float(preco_antigo)))} reais por apenas {_formatar_preco_falado(preco_atual)}!")
     else:
@@ -485,6 +486,11 @@ def gerar_video_reel_hyperframes(
             indent=2,
         )
 
+    header_alert_txt = (
+        "📉 MENOR PREÇO REGISTRADO!"
+        if oportunidade.get("menor_preco_historico")
+        else "⚡ ALERTA DE OFERTA"
+    )
     index_html = f"""<!doctype html>
 <html lang="pt-BR">
   <head>
@@ -579,7 +585,7 @@ def gerar_video_reel_hyperframes(
       <div id="top-bar"></div>
       <div id="bg-glow"></div>
       <div id="stage" class="clip" data-start="0" data-duration="{duracao_total}" data-track-index="0">
-        <div id="header-alert">⚡ ALERTA DE OFERTA</div>
+        <div id="header-alert">{header_alert_txt}</div>
         <div id="badges-row">
           <div id="badge-store" class="pill">{store_label}</div>
           {badge_off_html}
