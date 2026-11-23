@@ -1,4 +1,6 @@
 import asyncio
+import html
+import json
 import logging
 import math
 import os
@@ -371,5 +373,278 @@ def gerar_video_reel_mp4(imagem_card_path, arquivo_saida=None, duracao_segundos=
         logging.error(f"ffmpeg falhou ao gerar Reel: {res.stderr[-400:]}")
     except Exception as e:
         logging.error(f"Exceção ao executar ffmpeg: {e}")
+
+    return None
+
+
+def gerar_video_reel_hyperframes(
+    oportunidade,
+    img_bytes=None,
+    preco_antigo=None,
+    audio_path=None,
+    arquivo_saida=None,
+):
+    """
+    Gera um Reel MP4 1080x1920 com motion graphics GSAP determinísticos via HeyGen HyperFrames
+    (100% gratuito/open-source) sincronizado com a locução PT-BR da Thalita.
+    Retorna None caso o HyperFrames não esteja disponível para acionar fallback Pillow+ffmpeg.
+    """
+    hf_bin = shutil.which("hyperframes") or shutil.which("hyperframes.cmd")
+    npx_bin = shutil.which("npx") or shutil.which("npx.cmd")
+    if not hf_bin and not npx_bin:
+        logging.warning("HyperFrames/npx não encontrado. Usando fallback Pillow + ffmpeg.")
+        return None
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    if not arquivo_saida:
+        arquivo_saida = os.path.join(OUTPUT_DIR, "reel_oferta.mp4")
+    arquivo_saida_abs = os.path.abspath(arquivo_saida)
+
+    job_dir = os.path.abspath(os.path.join(OUTPUT_DIR, "hf_job"))
+    assets_dir = os.path.join(job_dir, "assets")
+    os.makedirs(assets_dir, exist_ok=True)
+
+    # 1. Prepara imagem do produto em assets/produto.jpg
+    prod_img_path = os.path.join(assets_dir, "produto.jpg")
+    tem_imagem = False
+    if img_bytes:
+        try:
+            with open(prod_img_path, "wb") as f_img:
+                f_img.write(img_bytes)
+            tem_imagem = True
+        except Exception as e:
+            logging.warning(f"Erro ao gravar produto.jpg para HyperFrames: {e}")
+
+    # 2. Prepara áudio da Thalita em assets/voz.mp3 e calcula duração exata
+    tem_audio = False
+    duracao_audio = 0.0
+    duracao_total = 10.0
+    if audio_path and os.path.exists(audio_path):
+        try:
+            shutil.copy2(audio_path, os.path.join(assets_dir, "voz.mp3"))
+            dur_probe = _obter_duracao_audio(audio_path)
+            duracao_audio = round(dur_probe, 2) if dur_probe else 10.0
+            duracao_total = round(max(9.0, min(22.0, duracao_audio + 0.8)), 2)
+            tem_audio = True
+        except Exception as e:
+            logging.warning(f"Erro ao preparar áudio para HyperFrames: {e}")
+
+    # 3. Dados dinâmicos da oferta
+    copy = oportunidade.get("copy_venda", {})
+    titulo_raw = (copy.get("titulo") or oportunidade.get("nome_produto") or "Super Oferta!").strip()
+    if len(titulo_raw) > 78:
+        titulo_raw = titulo_raw[:75].rsplit(" ", 1)[0] + "..."
+    titulo_html = html.escape(titulo_raw)
+
+    preco_atual = float(oportunidade.get("preco_atual", 0.0) or 0.0)
+    desconto = float(oportunidade.get("percentual_desconto", 0.0) or 0.0)
+    url_af = str(oportunidade.get("url_afiliado", "") or "")
+    loja = oportunidade.get("loja") or ("Mercado Livre" if "mercadolivre" in url_af.lower() else "Magalu")
+    is_ml = "mercado" in loja.lower()
+
+    store_label = "MERCADO LIVRE" if is_ml else "MAGALU OFICIAL"
+    store_bg = "#ffe600" if is_ml else "#0086ff"
+    store_fg = "#0f172a" if is_ml else "#ffffff"
+    top_gradient = (
+        "linear-gradient(90deg, #ffe600, #ff6b00, #ef4444)"
+        if is_ml
+        else "linear-gradient(90deg, #0086ff, #38bdf8, #10b981)"
+    )
+
+    preco_novo_str = f"R$ {preco_atual:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    bloco_preco_antigo = ""
+    if preco_antigo and float(preco_antigo) > preco_atual:
+        preco_antigo_str = f"De R$ {float(preco_antigo):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        bloco_preco_antigo = f"""
+          <div id="old-price-wrap">
+            {preco_antigo_str}
+            <div id="strike-line"></div>
+          </div>"""
+
+    badge_off_html = (
+        f'<div id="badge-off" class="pill">-{desconto:.0f}% OFF</div>'
+        if desconto >= 5
+        else ""
+    )
+    img_html = '<img id="product-img" src="./assets/produto.jpg" alt="Produto" />' if tem_imagem else ""
+    audio_html = (
+        f'<audio src="./assets/voz.mp3" data-start="0.2" data-duration="{duracao_audio}" data-track-index="1"></audio>'
+        if tem_audio
+        else ""
+    )
+
+    # 4. Escreve hyperframes.json e index.html (template validado 1080x1920 sem sobreposição)
+    with open(os.path.join(job_dir, "hyperframes.json"), "w", encoding="utf-8") as f_cfg:
+        json.dump(
+            {
+                "$schema": "https://hyperframes.heygen.com/schema/hyperframes.json",
+                "paths": {"blocks": "compositions", "components": "compositions/components", "assets": "assets"},
+                "media": {"autoProxy": True},
+            },
+            f_cfg,
+            indent=2,
+        )
+
+    index_html = f"""<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1080, height=1920" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.15.0/dist/gsap.min.js"></script>
+    <style>
+      * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+      html, body {{
+        width: 1080px; height: 1920px; overflow: hidden;
+        background: #070b18;
+        font-family: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+      }}
+      #root {{
+        position: relative; width: 1080px; height: 1920px; overflow: hidden;
+        background: radial-gradient(circle at 50% 34%, #1b2c5c 0%, #121c3a 45%, #070b18 100%);
+      }}
+      #bg-glow {{
+        position: absolute; width: 900px; height: 900px; top: 220px; left: 90px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(37, 99, 235, 0.35) 0%, rgba(239, 68, 68, 0.14) 45%, transparent 70%);
+        filter: blur(40px); pointer-events: none;
+      }}
+      #top-bar {{
+        position: absolute; top: 0; left: 0; width: 1080px; height: 16px;
+        background: {top_gradient};
+      }}
+      #stage {{
+        position: absolute; inset: 0; width: 1080px; height: 1920px;
+        display: flex; flex-direction: column; align-items: center; z-index: 2;
+      }}
+      #header-alert {{
+        margin-top: 155px; font-size: 32px; font-weight: 800;
+        letter-spacing: 0.12em; color: #ffe600; text-transform: uppercase;
+      }}
+      #badges-row {{
+        margin-top: 22px; display: flex; align-items: center; gap: 20px;
+      }}
+      .pill {{
+        padding: 16px 34px; border-radius: 999px; font-size: 34px; font-weight: 900;
+        letter-spacing: 0.02em; box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+      }}
+      #badge-store {{ background: {store_bg}; color: {store_fg}; }}
+      #badge-off {{ background: linear-gradient(135deg, #ef4444, #dc2626); color: #ffffff; }}
+      #product-card {{
+        margin-top: 38px; width: 840px; height: 700px; background: #ffffff;
+        border-radius: 44px; padding: 36px;
+        box-shadow: 0 30px 70px rgba(0, 0, 0, 0.55), 0 0 0 3px rgba(255, 255, 255, 0.12);
+        display: flex; align-items: center; justify-content: center;
+      }}
+      #product-img {{ max-width: 100%; max-height: 100%; object-fit: contain; }}
+      #title {{
+        margin-top: 44px; width: 880px; text-align: center; color: #f8fafc;
+        font-size: 48px; font-weight: 800; line-height: 1.18;
+      }}
+      #price-box {{
+        margin-top: 28px; display: flex; flex-direction: column; align-items: center;
+      }}
+      #old-price-wrap {{
+        position: relative; display: inline-block;
+        font-size: 44px; font-weight: 600; color: #94a3b8;
+      }}
+      #strike-line {{
+        position: absolute; left: -12px; right: -12px; top: 52%; height: 6px;
+        background: #ef4444; border-radius: 4px;
+        transform-origin: left center; transform: scaleX(0);
+      }}
+      #new-price {{
+        margin-top: 8px; font-size: 108px; font-weight: 900; color: #10b981;
+        letter-spacing: -0.03em; text-shadow: 0 0 40px rgba(16, 185, 129, 0.45);
+      }}
+      #cta-wrap {{
+        margin-top: 36px; position: relative; width: 840px; height: 96px;
+        border-radius: 999px; background: linear-gradient(135deg, #2563eb, #1d4ed8);
+        box-shadow: 0 18px 45px rgba(37, 99, 235, 0.5);
+        display: flex; align-items: center; justify-content: center; overflow: hidden;
+      }}
+      #cta-text {{ color: #ffffff; font-size: 36px; font-weight: 900; letter-spacing: 0.03em; }}
+      #cta-shine {{
+        position: absolute; top: 0; left: -240px; width: 180px; height: 100%;
+        background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent);
+        transform: skewX(-22deg);
+      }}
+      #brand {{
+        margin-top: 26px; font-size: 28px; font-weight: 600;
+        color: #94a3b8; letter-spacing: 0.08em;
+      }}
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="{duracao_total}" data-width="1080" data-height="1920">
+      <div id="top-bar"></div>
+      <div id="bg-glow"></div>
+      <div id="stage" class="clip" data-start="0" data-duration="{duracao_total}" data-track-index="0">
+        <div id="header-alert">⚡ ALERTA DE OFERTA</div>
+        <div id="badges-row">
+          <div id="badge-store" class="pill">{store_label}</div>
+          {badge_off_html}
+        </div>
+        <div id="product-card">{img_html}</div>
+        <h1 id="title">{titulo_html}</h1>
+        <div id="price-box">
+          {bloco_preco_antigo}
+          <div id="new-price">{preco_novo_str}</div>
+        </div>
+        <div id="cta-wrap">
+          <span id="cta-text">👇 LINK NO 1º COMENTÁRIO!</span>
+          <div id="cta-shine"></div>
+        </div>
+        <div id="brand">GAMESTORE • @PROMOSGEEKTECH</div>
+      </div>
+      {audio_html}
+    </div>
+    <script>
+      const tl = gsap.timeline({{ paused: true }});
+      tl.fromTo("#header-alert", {{ opacity: 0, y: -35 }}, {{ opacity: 1, y: 0, duration: 0.45, ease: "power3.out" }}, 0.0);
+      tl.fromTo("#badge-store", {{ opacity: 0, x: -60, scale: 0.85 }}, {{ opacity: 1, x: 0, scale: 1, duration: 0.5, ease: "back.out(1.6)" }}, 0.15);
+      if (document.querySelector("#badge-off")) {{
+        tl.fromTo("#badge-off", {{ opacity: 0, scale: 1.7, rotate: -10 }}, {{ opacity: 1, scale: 1, rotate: 0, duration: 0.55, ease: "back.out(1.8)" }}, 0.35);
+        tl.to("#badge-off", {{ scale: 1.08, duration: 0.45, yoyo: true, repeat: 9, ease: "sine.inOut" }}, 4.5);
+      }}
+      tl.fromTo("#product-card", {{ opacity: 0, y: 80, scale: 0.86 }}, {{ opacity: 1, y: 0, scale: 1, duration: 0.7, ease: "power3.out" }}, 0.5);
+      if (document.querySelector("#product-img")) {{
+        tl.fromTo("#product-img", {{ scale: 0.92 }}, {{ scale: 1.06, duration: {max(duracao_total - 0.8, 5.0)}, ease: "none" }}, 0.8);
+      }}
+      tl.fromTo("#title", {{ opacity: 0, y: 35 }}, {{ opacity: 1, y: 0, duration: 0.55, ease: "power3.out" }}, 1.2);
+      if (document.querySelector("#old-price-wrap")) {{
+        tl.fromTo("#old-price-wrap", {{ opacity: 0, y: 20 }}, {{ opacity: 1, y: 0, duration: 0.4, ease: "power2.out" }}, 2.4);
+        tl.to("#strike-line", {{ scaleX: 1, duration: 0.45, ease: "power3.inOut" }}, 3.0);
+      }}
+      tl.fromTo("#new-price", {{ opacity: 0, scale: 0.55 }}, {{ opacity: 1, scale: 1, duration: 0.65, ease: "back.out(1.8)" }}, 3.5);
+      tl.to("#bg-glow", {{ scale: 1.18, opacity: 0.9, duration: 3.5, yoyo: true, repeat: 3, ease: "sine.inOut" }}, 0.5);
+      tl.fromTo("#cta-wrap", {{ opacity: 0, y: 55, scale: 0.9 }}, {{ opacity: 1, y: 0, scale: 1, duration: 0.6, ease: "back.out(1.5)" }}, 4.6);
+      tl.fromTo("#brand", {{ opacity: 0 }}, {{ opacity: 1, duration: 0.5 }}, 5.1);
+      tl.fromTo("#cta-shine", {{ left: "-240px" }}, {{ left: "960px", duration: 0.9, ease: "power2.inOut" }}, 5.8);
+      tl.fromTo("#cta-shine", {{ left: "-240px" }}, {{ left: "960px", duration: 0.9, ease: "power2.inOut" }}, 8.6);
+      window.__timelines["main"] = tl;
+      tl.seek(0);
+    </script>
+  </body>
+</html>"""
+
+    with open(os.path.join(job_dir, "index.html"), "w", encoding="utf-8") as f_html:
+        f_html.write(index_html)
+
+    cmd = (
+        [hf_bin, "render", "--output", arquivo_saida_abs]
+        if hf_bin
+        else [npx_bin, "--yes", "hyperframes", "render", "--output", arquivo_saida_abs]
+    )
+
+    try:
+        logging.info(f"⚡ Renderizando Reel animado via HyperFrames ({duracao_total}s)...")
+        res = subprocess.run(cmd, cwd=job_dir, capture_output=True, text=True, timeout=240)
+        if res.returncode == 0 and os.path.exists(arquivo_saida_abs) and os.path.getsize(arquivo_saida_abs) > 50000:
+            tamanho_kb = os.path.getsize(arquivo_saida_abs) // 1024
+            logging.info(f"🎬 Reel HyperFrames gerado com sucesso ({duracao_total}s, {tamanho_kb} KB): {arquivo_saida_abs}")
+            return arquivo_saida_abs
+        logging.warning(f"HyperFrames retornou código {res.returncode}. Acionando fallback Pillow+ffmpeg.")
+    except Exception as e:
+        logging.warning(f"Exceção no HyperFrames (acionando fallback Pillow+ffmpeg): {e}")
 
     return None

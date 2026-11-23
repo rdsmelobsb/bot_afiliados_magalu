@@ -1484,6 +1484,7 @@ def disparar_facebook_reels_stories(oportunidades_dict, df_todos_produtos=None, 
         from media_generator import (
             gerar_card_vertical_9x16,
             gerar_locucao_ptbr,
+            gerar_video_reel_hyperframes,
             gerar_video_reel_mp4,
             OUTPUT_DIR,
         )
@@ -1563,20 +1564,30 @@ def disparar_facebook_reels_stories(oportunidades_dict, df_todos_produtos=None, 
         preco_antigo = op.get("preco_antigo") or extra.get("preco_antigo")
         img_bytes = baixar_imagem_jpeg(imagem_url) if imagem_url else None
 
-        card_path = gerar_card_vertical_9x16(
-            op, img_bytes=img_bytes, preco_antigo=preco_antigo, modo="reel",
-            arquivo_saida=os.path.join(OUTPUT_DIR, f"reel_card_{idx}.jpg")
-        )
         voz_path = gerar_locucao_ptbr(
             op, preco_antigo=preco_antigo,
             arquivo_saida=os.path.join(OUTPUT_DIR, f"reel_voz_{idx}.mp3")
         )
-        mp4_path = gerar_video_reel_mp4(
-            card_path,
-            arquivo_saida=os.path.join(OUTPUT_DIR, f"reel_oferta_{idx}.mp4"),
-            duracao_segundos=9,
-            audio_path=voz_path
+        # Tenta primeiro o Reel animado em motion graphics (HyperFrames); faz fallback para Pillow + ffmpeg
+        mp4_alvo = os.path.join(OUTPUT_DIR, f"reel_oferta_{idx}.mp4")
+        mp4_path = gerar_video_reel_hyperframes(
+            op,
+            img_bytes=img_bytes,
+            preco_antigo=preco_antigo,
+            audio_path=voz_path,
+            arquivo_saida=mp4_alvo,
         )
+        if not mp4_path:
+            card_path = gerar_card_vertical_9x16(
+                op, img_bytes=img_bytes, preco_antigo=preco_antigo, modo="reel",
+                arquivo_saida=os.path.join(OUTPUT_DIR, f"reel_card_{idx}.jpg")
+            )
+            mp4_path = gerar_video_reel_mp4(
+                card_path,
+                arquivo_saida=mp4_alvo,
+                duracao_segundos=9,
+                audio_path=voz_path
+            )
         if not mp4_path or not os.path.exists(mp4_path):
             continue
 
