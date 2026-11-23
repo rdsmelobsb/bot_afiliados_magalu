@@ -444,26 +444,27 @@ def gerar_video_reel_hyperframes(
     is_ml = "mercado" in loja.lower()
 
     store_label = "MERCADO LIVRE" if is_ml else "MAGALU OFICIAL"
-    store_bg = "#ffe600" if is_ml else "#0086ff"
-    store_fg = "#0f172a" if is_ml else "#ffffff"
-    top_gradient = (
-        "linear-gradient(90deg, #ffe600, #ff6b00, #ef4444)"
-        if is_ml
-        else "linear-gradient(90deg, #0086ff, #38bdf8, #10b981)"
-    )
+    store_bg = "#FFE600" if is_ml else "#0086FF"
+    store_fg = "#0A0B0E" if is_ml else "#FFFFFF"
+    accent_color = "#D9FF00" if is_ml else "#38BDF8"
 
     preco_novo_str = f"R$ {preco_atual:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
     bloco_preco_antigo = ""
+    bloco_economia = ""
     if preco_antigo and float(preco_antigo) > preco_atual:
-        preco_antigo_str = f"De R$ {float(preco_antigo):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        preco_antigo_f = float(preco_antigo)
+        economia_f = preco_antigo_f - preco_atual
+        preco_antigo_str = f"DE R$ {preco_antigo_f:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        economia_str = f"ECONOMIZE R$ {economia_f:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
         bloco_preco_antigo = f"""
           <div id="old-price-wrap">
-            {preco_antigo_str}
+            <span>{preco_antigo_str}</span>
             <div id="strike-line"></div>
           </div>"""
+        bloco_economia = f'<div id="savings-pill">{economia_str}</div>'
 
     badge_off_html = (
-        f'<div id="badge-off" class="pill">-{desconto:.0f}% OFF</div>'
+        f'<div id="badge-off"><span class="off-num">-{desconto:.0f}%</span><span class="off-lbl">OFF</span></div>'
         if desconto >= 5
         else ""
     )
@@ -474,7 +475,7 @@ def gerar_video_reel_hyperframes(
         else ""
     )
 
-    # 4. Escreve hyperframes.json e index.html (template validado 1080x1920 sem sobreposição)
+    # 4. Escreve hyperframes.json e index.html (template Impeccable 1080x1920 sem sobreposição)
     with open(os.path.join(job_dir, "hyperframes.json"), "w", encoding="utf-8") as f_cfg:
         json.dump(
             {
@@ -486,147 +487,306 @@ def gerar_video_reel_hyperframes(
             indent=2,
         )
 
-    header_alert_txt = (
-        "📉 MENOR PREÇO REGISTRADO!"
-        if oportunidade.get("menor_preco_historico")
-        else "⚡ ALERTA DE OFERTA"
+    is_min_hist = bool(oportunidade.get("menor_preco_historico"))
+    header_alert_txt = "MENOR PREÇO 30D" if is_min_hist else "OFERTA VERIFICADA"
+    header_icon_svg = (
+        '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"></polyline><polyline points="17 18 23 18 23 12"></polyline></svg>'
+        if is_min_hist
+        else '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>'
     )
+    cta_icon_svg = '<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><polyline points="19 12 12 19 5 12"></polyline></svg>'
+
     index_html = f"""<!doctype html>
 <html lang="pt-BR">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=1080, height=1920" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700;800;900&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet" />
     <script src="https://cdn.jsdelivr.net/npm/gsap@3.15.0/dist/gsap.min.js"></script>
     <style>
+      :root {{
+        --bg: #0A0B0E;
+        --surface: #13161D;
+        --border: rgba(255, 255, 255, 0.10);
+        --text: #F5F7FA;
+        --muted: #9AA3B2;
+        --accent: {accent_color};
+        --danger: #FF3B30;
+        --store-bg: {store_bg};
+        --store-fg: {store_fg};
+      }}
       * {{ margin: 0; padding: 0; box-sizing: border-box; }}
       html, body {{
         width: 1080px; height: 1920px; overflow: hidden;
-        background: #070b18;
-        font-family: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+        background: var(--bg);
+        font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: var(--text);
+        -webkit-font-smoothing: antialiased;
       }}
       #root {{
         position: relative; width: 1080px; height: 1920px; overflow: hidden;
-        background: radial-gradient(circle at 50% 34%, #1b2c5c 0%, #121c3a 45%, #070b18 100%);
+        background: var(--bg);
       }}
-      #bg-glow {{
-        position: absolute; width: 900px; height: 900px; top: 220px; left: 90px;
-        border-radius: 50%;
-        background: radial-gradient(circle, rgba(37, 99, 235, 0.35) 0%, rgba(239, 68, 68, 0.14) 45%, transparent 70%);
-        filter: blur(40px); pointer-events: none;
+      /* Micro-grade arquitetônica sutil (estética Tech Editorial) */
+      #bg-grid {{
+        position: absolute; inset: 0; pointer-events: none;
+        background-image:
+          linear-gradient(to right, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+          linear-gradient(to bottom, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+        background-size: 54px 54px;
+        mask-image: radial-gradient(ellipse 85% 75% at 50% 42%, #000 35%, transparent 100%);
       }}
-      #top-bar {{
-        position: absolute; top: 0; left: 0; width: 1080px; height: 16px;
-        background: {top_gradient};
+      /* Faixa superior limpa da marca */
+      #top-accent {{
+        position: absolute; top: 0; left: 0; width: 1080px; height: 10px;
+        background: var(--accent); z-index: 5;
       }}
+      /* Invariante HyperFrames: class="clip" apenas no container raiz #stage */
       #stage {{
         position: absolute; inset: 0; width: 1080px; height: 1920px;
-        display: flex; flex-direction: column; align-items: center; z-index: 2;
+        display: flex; flex-direction: column; align-items: center;
+        padding: 152px 76px 210px 76px;
+        z-index: 2;
       }}
-      #header-alert {{
-        margin-top: 155px; font-size: 32px; font-weight: 800;
-        letter-spacing: 0.12em; color: #ffe600; text-transform: uppercase;
+      /* 1. Cabeçalho editorial (Masthead) */
+      #masthead {{
+        width: 100%;
+        display: flex; align-items: center; justify-content: space-between;
+        padding-bottom: 22px;
+        border-bottom: 1px solid var(--border);
       }}
-      #badges-row {{
-        margin-top: 22px; display: flex; align-items: center; gap: 20px;
+      #brand-lockup {{
+        display: flex; align-items: center; gap: 14px;
       }}
-      .pill {{
-        padding: 16px 34px; border-radius: 999px; font-size: 34px; font-weight: 900;
-        letter-spacing: 0.02em; box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+      #brand-dot {{
+        width: 14px; height: 14px; border-radius: 3px;
+        background: var(--accent);
       }}
-      #badge-store {{ background: {store_bg}; color: {store_fg}; }}
-      #badge-off {{ background: linear-gradient(135deg, #ef4444, #dc2626); color: #ffffff; }}
-      #product-card {{
-        margin-top: 38px; width: 840px; height: 700px; background: #ffffff;
-        border-radius: 44px; padding: 36px;
-        box-shadow: 0 30px 70px rgba(0, 0, 0, 0.55), 0 0 0 3px rgba(255, 255, 255, 0.12);
+      #brand-name {{
+        font-family: "Barlow Condensed", sans-serif;
+        font-size: 36px; font-weight: 900; letter-spacing: 0.08em;
+        color: var(--text); text-transform: uppercase;
+      }}
+      #status-tag {{
+        display: inline-flex; align-items: center; gap: 10px;
+        padding: 10px 22px; border-radius: 8px;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid var(--border);
+        color: var(--accent);
+        font-size: 24px; font-weight: 800; letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }}
+      /* 2. Palco de estúdio do produto (com selos integrados) */
+      #product-stage {{
+        position: relative;
+        margin-top: 34px;
+        width: 100%; height: 690px;
+        background: #FFFFFF;
+        border-radius: 28px;
+        padding: 52px;
         display: flex; align-items: center; justify-content: center;
+        overflow: hidden;
+        box-shadow: 0 32px 64px rgba(0, 0, 0, 0.55);
       }}
-      #product-img {{ max-width: 100%; max-height: 100%; object-fit: contain; }}
+      #product-img {{
+        max-width: 92%; max-height: 92%; object-fit: contain;
+        transform-origin: center center;
+      }}
+      /* Selo da loja integrado ao palco (canto inferior esquerdo) */
+      #badge-store {{
+        position: absolute; left: 28px; bottom: 28px;
+        padding: 12px 24px; border-radius: 10px;
+        background: var(--store-bg); color: var(--store-fg);
+        font-family: "Barlow Condensed", sans-serif;
+        font-size: 32px; font-weight: 900; letter-spacing: 0.05em;
+        text-transform: uppercase;
+        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+      }}
+      /* Carimbo editorial de desconto (canto superior direito) */
+      #badge-off {{
+        position: absolute; right: 28px; top: 28px;
+        background: var(--danger); color: #FFFFFF;
+        padding: 14px 26px; border-radius: 14px;
+        display: flex; align-items: baseline; gap: 8px;
+        box-shadow: 0 14px 30px rgba(255, 59, 48, 0.35);
+      }}
+      .off-num {{
+        font-family: "Barlow Condensed", sans-serif;
+        font-size: 62px; font-weight: 900; line-height: 0.92;
+        font-variant-numeric: tabular-nums;
+      }}
+      .off-lbl {{
+        font-family: "Barlow Condensed", sans-serif;
+        font-size: 30px; font-weight: 800; letter-spacing: 0.04em;
+      }}
+      /* 3. Título do produto (tipografia limpa, sem competir com o preço) */
       #title {{
-        margin-top: 44px; width: 880px; text-align: center; color: #f8fafc;
-        font-size: 48px; font-weight: 800; line-height: 1.18;
+        margin-top: 38px; width: 100%;
+        text-align: left; color: var(--text);
+        font-size: 46px; font-weight: 800; line-height: 1.18;
+        letter-spacing: -0.025em;
+        display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+        overflow: hidden;
       }}
-      #price-box {{
-        margin-top: 28px; display: flex; flex-direction: column; align-items: center;
+      /* 4. Momento Focal: Bloco de Preço + Economia Real */
+      #price-panel {{
+        margin-top: 30px; width: 100%;
+        padding: 30px 36px; border-radius: 24px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        display: flex; flex-direction: column; gap: 8px;
+      }}
+      #price-top-row {{
+        display: flex; align-items: center; justify-content: space-between;
+        min-height: 44px;
       }}
       #old-price-wrap {{
         position: relative; display: inline-block;
-        font-size: 44px; font-weight: 600; color: #94a3b8;
+        font-family: "Barlow Condensed", sans-serif;
+        font-size: 42px; font-weight: 700; letter-spacing: 0.02em;
+        color: var(--muted); font-variant-numeric: tabular-nums;
       }}
       #strike-line {{
-        position: absolute; left: -12px; right: -12px; top: 52%; height: 6px;
-        background: #ef4444; border-radius: 4px;
+        position: absolute; left: -8px; right: -8px; top: 50%; height: 5px;
+        background: var(--danger); border-radius: 2px;
         transform-origin: left center; transform: scaleX(0);
       }}
+      #savings-pill {{
+        padding: 8px 18px; border-radius: 8px;
+        background: rgba(217, 255, 0, 0.12);
+        border: 1px solid rgba(217, 255, 0, 0.35);
+        color: var(--accent);
+        font-size: 24px; font-weight: 800; letter-spacing: 0.03em;
+        font-variant-numeric: tabular-nums;
+      }}
       #new-price {{
-        margin-top: 8px; font-size: 108px; font-weight: 900; color: #10b981;
-        letter-spacing: -0.03em; text-shadow: 0 0 40px rgba(16, 185, 129, 0.45);
+        font-family: "Barlow Condensed", sans-serif;
+        font-size: 138px; font-weight: 900; line-height: 0.96;
+        letter-spacing: -0.02em;
+        color: var(--accent);
+        font-variant-numeric: tabular-nums;
       }}
+      /* 5. Barra de Ação (CTA) de alto contraste */
       #cta-wrap {{
-        margin-top: 36px; position: relative; width: 840px; height: 96px;
-        border-radius: 999px; background: linear-gradient(135deg, #2563eb, #1d4ed8);
-        box-shadow: 0 18px 45px rgba(37, 99, 235, 0.5);
-        display: flex; align-items: center; justify-content: center; overflow: hidden;
+        margin-top: 32px; position: relative; width: 100%; height: 104px;
+        border-radius: 20px; background: #FFFFFF; color: #0A0B0E;
+        display: flex; align-items: center; justify-content: center; gap: 16px;
+        overflow: hidden;
+        box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
       }}
-      #cta-text {{ color: #ffffff; font-size: 36px; font-weight: 900; letter-spacing: 0.03em; }}
+      #cta-text {{
+        font-family: "Barlow Condensed", sans-serif;
+        font-size: 44px; font-weight: 900; letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }}
+      #cta-icon {{
+        display: flex; align-items: center; justify-content: center;
+      }}
       #cta-shine {{
-        position: absolute; top: 0; left: -240px; width: 180px; height: 100%;
-        background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent);
+        position: absolute; top: 0; left: -260px; width: 180px; height: 100%;
+        background: linear-gradient(90deg, transparent, rgba(10, 11, 14, 0.14), transparent);
         transform: skewX(-22deg);
       }}
-      #brand {{
-        margin-top: 26px; font-size: 28px; font-weight: 600;
-        color: #94a3b8; letter-spacing: 0.08em;
+      #cta-progress-track {{
+        position: absolute; left: 0; bottom: 0; width: 100%; height: 7px;
+        background: rgba(10, 11, 14, 0.12);
+      }}
+      #cta-progress-bar {{
+        width: 100%; height: 100%; background: var(--danger);
+        transform-origin: left center; transform: scaleX(0);
+      }}
+      #footer-handle {{
+        margin-top: 22px; width: 100%;
+        display: flex; justify-content: space-between; align-items: center;
+        font-size: 24px; font-weight: 700; color: var(--muted);
+        letter-spacing: 0.05em;
       }}
     </style>
   </head>
   <body>
     <div id="root" data-composition-id="main" data-start="0" data-duration="{duracao_total}" data-width="1080" data-height="1920">
-      <div id="top-bar"></div>
-      <div id="bg-glow"></div>
+      <div id="top-accent"></div>
+      <div id="bg-grid"></div>
       <div id="stage" class="clip" data-start="0" data-duration="{duracao_total}" data-track-index="0">
-        <div id="header-alert">{header_alert_txt}</div>
-        <div id="badges-row">
-          <div id="badge-store" class="pill">{store_label}</div>
+        <header id="masthead">
+          <div id="brand-lockup">
+            <div id="brand-dot"></div>
+            <span id="brand-name">GAMESTORE // RADAR</span>
+          </div>
+          <div id="status-tag">{header_icon_svg}<span>{header_alert_txt}</span></div>
+        </header>
+
+        <section id="product-stage">
+          {img_html}
+          <div id="badge-store">{store_label}</div>
           {badge_off_html}
-        </div>
-        <div id="product-card">{img_html}</div>
+        </section>
+
         <h1 id="title">{titulo_html}</h1>
-        <div id="price-box">
-          {bloco_preco_antigo}
+
+        <section id="price-panel">
+          <div id="price-top-row">
+            {bloco_preco_antigo}
+            {bloco_economia}
+          </div>
           <div id="new-price">{preco_novo_str}</div>
-        </div>
+        </section>
+
         <div id="cta-wrap">
-          <span id="cta-text">👇 LINK NO 1º COMENTÁRIO!</span>
+          <span id="cta-icon">{cta_icon_svg}</span>
+          <span id="cta-text">LINK NO 1º COMENTÁRIO</span>
           <div id="cta-shine"></div>
+          <div id="cta-progress-track"><div id="cta-progress-bar"></div></div>
         </div>
-        <div id="brand">GAMESTORE • @PROMOSGEEKTECH</div>
+
+        <footer id="footer-handle">
+          <span>@PROMOSGEEKTECH</span>
+          <span>ESTOQUE LIMITADO</span>
+        </footer>
       </div>
       {audio_html}
     </div>
     <script>
       const tl = gsap.timeline({{ paused: true }});
-      tl.fromTo("#header-alert", {{ opacity: 0, y: -35 }}, {{ opacity: 1, y: 0, duration: 0.45, ease: "power3.out" }}, 0.0);
-      tl.fromTo("#badge-store", {{ opacity: 0, x: -60, scale: 0.85 }}, {{ opacity: 1, x: 0, scale: 1, duration: 0.5, ease: "back.out(1.6)" }}, 0.15);
-      if (document.querySelector("#badge-off")) {{
-        tl.fromTo("#badge-off", {{ opacity: 0, scale: 1.7, rotate: -10 }}, {{ opacity: 1, scale: 1, rotate: 0, duration: 0.55, ease: "back.out(1.8)" }}, 0.35);
-        tl.to("#badge-off", {{ scale: 1.08, duration: 0.45, yoyo: true, repeat: 9, ease: "sine.inOut" }}, 4.5);
-      }}
-      tl.fromTo("#product-card", {{ opacity: 0, y: 80, scale: 0.86 }}, {{ opacity: 1, y: 0, scale: 1, duration: 0.7, ease: "power3.out" }}, 0.5);
+      /* 0.0s - 0.6s: Hook imediato (palco do produto via clip-path + masthead) */
+      tl.fromTo("#masthead", {{ opacity: 0, y: -18 }}, {{ opacity: 1, y: 0, duration: 0.35, ease: "power3.out" }}, 0.0);
+      tl.fromTo(
+        "#product-stage",
+        {{ clipPath: "inset(8% 0% 8% 0% round 28px)", opacity: 0, y: 24 }},
+        {{ clipPath: "inset(0% 0% 0% 0% round 28px)", opacity: 1, y: 0, duration: 0.55, ease: "power4.out" }},
+        0.05
+      );
       if (document.querySelector("#product-img")) {{
-        tl.fromTo("#product-img", {{ scale: 0.92 }}, {{ scale: 1.06, duration: {max(duracao_total - 0.8, 5.0)}, ease: "none" }}, 0.8);
+        tl.fromTo("#product-img", {{ scale: 0.94 }}, {{ scale: 1.06, duration: {max(duracao_total - 0.3, 5.0)}, ease: "none" }}, 0.25);
       }}
-      tl.fromTo("#title", {{ opacity: 0, y: 35 }}, {{ opacity: 1, y: 0, duration: 0.55, ease: "power3.out" }}, 1.2);
+      tl.fromTo("#badge-store", {{ opacity: 0, y: 16 }}, {{ opacity: 1, y: 0, duration: 0.35, ease: "power3.out" }}, 0.35);
+      if (document.querySelector("#badge-off")) {{
+        tl.fromTo("#badge-off", {{ opacity: 0, scale: 1.25 }}, {{ opacity: 1, scale: 1, duration: 0.4, ease: "power4.out" }}, 0.4);
+      }}
+
+      /* 0.55s: Título entra limpo e legível */
+      tl.fromTo("#title", {{ opacity: 0, y: 20 }}, {{ opacity: 1, y: 0, duration: 0.42, ease: "power3.out" }}, 0.55);
+
+      /* 0.95s - 1.85s: Momento Focal (Queda de Preço antes dos 2s de retenção!) */
+      tl.fromTo("#price-panel", {{ opacity: 0, y: 24 }}, {{ opacity: 1, y: 0, duration: 0.45, ease: "power3.out" }}, 0.9);
       if (document.querySelector("#old-price-wrap")) {{
-        tl.fromTo("#old-price-wrap", {{ opacity: 0, y: 20 }}, {{ opacity: 1, y: 0, duration: 0.4, ease: "power2.out" }}, 2.4);
-        tl.to("#strike-line", {{ scaleX: 1, duration: 0.45, ease: "power3.inOut" }}, 3.0);
+        tl.to("#strike-line", {{ scaleX: 1, duration: 0.38, ease: "power3.inOut" }}, 1.25);
       }}
-      tl.fromTo("#new-price", {{ opacity: 0, scale: 0.55 }}, {{ opacity: 1, scale: 1, duration: 0.65, ease: "back.out(1.8)" }}, 3.5);
-      tl.to("#bg-glow", {{ scale: 1.18, opacity: 0.9, duration: 3.5, yoyo: true, repeat: 3, ease: "sine.inOut" }}, 0.5);
-      tl.fromTo("#cta-wrap", {{ opacity: 0, y: 55, scale: 0.9 }}, {{ opacity: 1, y: 0, scale: 1, duration: 0.6, ease: "back.out(1.5)" }}, 4.6);
-      tl.fromTo("#brand", {{ opacity: 0 }}, {{ opacity: 1, duration: 0.5 }}, 5.1);
-      tl.fromTo("#cta-shine", {{ left: "-240px" }}, {{ left: "960px", duration: 0.9, ease: "power2.inOut" }}, 5.8);
-      tl.fromTo("#cta-shine", {{ left: "-240px" }}, {{ left: "960px", duration: 0.9, ease: "power2.inOut" }}, 8.6);
+      tl.fromTo("#new-price", {{ opacity: 0, y: 18 }}, {{ opacity: 1, y: 0, duration: 0.48, ease: "power4.out" }}, 1.38);
+      if (document.querySelector("#savings-pill")) {{
+        tl.fromTo("#savings-pill", {{ opacity: 0, x: 16 }}, {{ opacity: 1, x: 0, duration: 0.35, ease: "power3.out" }}, 1.65);
+      }}
+
+      /* 2.0s+: CTA + barra de progresso sincronizada com a locução */
+      tl.fromTo("#cta-wrap", {{ opacity: 0, y: 22 }}, {{ opacity: 1, y: 0, duration: 0.45, ease: "power3.out" }}, 2.0);
+      tl.fromTo("#footer-handle", {{ opacity: 0 }}, {{ opacity: 1, duration: 0.35 }}, 2.25);
+      tl.to("#cta-progress-bar", {{ scaleX: 1, duration: {max(duracao_total - 2.1, 4.0)}, ease: "none" }}, 2.1);
+      tl.fromTo("#cta-icon", {{ y: -4 }}, {{ y: 5, duration: 0.55, yoyo: true, repeat: 9, ease: "sine.inOut" }}, 2.5);
+      tl.fromTo("#cta-shine", {{ left: "-260px" }}, {{ left: "1020px", duration: 0.85, ease: "power2.inOut" }}, 3.2);
+      tl.fromTo("#cta-shine", {{ left: "-260px" }}, {{ left: "1020px", duration: 0.85, ease: "power2.inOut" }}, 6.4);
+
       window.__timelines["main"] = tl;
       tl.seek(0);
     </script>
