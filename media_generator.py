@@ -86,12 +86,13 @@ def gerar_card_vertical_9x16(
     arquivo_saida=None,
 ):
     """
-    Gera um criativo vertical 9:16 (1080x1920) de alto impacto para Reels/Stories:
-      - Zona segura para UI da Meta (topo/rodapé)
-      - Selo da loja (Mercado Livre / Magalu) + Tag de desconto (% OFF)
-      - Foto do produto centralizada em moldura branca limpa
-      - Título legível + Preço De/Por em destaque
-      - Barra de CTA para o 1º comentário / Telegram (@promosgeektech)
+    Gera um criativo vertical 9:16 (1080x1920) com estética Impeccable Tech Editorial:
+      - Zona segura calibrada para UI do Facebook Stories/Reels (topo >= 225px, rodapé >= 210px)
+      - Fundo obsidian (#0A0B0E) com micro-grade arquitetônica e faixa de acento
+      - Cabeçalho GAMESTORE // RADAR + tag MENOR PREÇO 30D / OFERTA VERIFICADA
+      - Palco branco de estúdio com foto do produto + carimbo -XX% OFF e selo da loja integrados
+      - Painel de preço (#13161D) com De/Por + tag ECONOMIZE R$ ...
+      - Barra de CTA branca de alto contraste sem estouro de texto
     """
     if not PILLOW_OK:
         logging.warning("Pillow não disponível para gerar card vertical.")
@@ -108,54 +109,59 @@ def gerar_card_vertical_9x16(
     url_af = str(oportunidade.get("url_afiliado", "") or "")
     loja = oportunidade.get("loja") or ("Mercado Livre" if "mercadolivre" in url_af.lower() else "Magalu")
     is_ml = "mercado" in loja.lower()
+    is_min_hist = bool(oportunidade.get("menor_preco_historico"))
 
-    # 1. Fundo gradiente escuro (estilo vitrine Tech/Gamer)
-    canvas = _desenhar_gradiente_vertical(WIDTH, HEIGHT, (11, 16, 36), (22, 34, 68))
+    # Paleta Impeccable Tech Editorial
+    cor_bg = (10, 11, 14)          # #0A0B0E
+    cor_grid = (20, 22, 28)        # micro-grade sutil
+    cor_surface = (19, 22, 29)     # #13161D
+    cor_border = (42, 46, 58)      # hairline
+    cor_text = (245, 247, 250)     # #F5F7FA
+    cor_muted = (154, 163, 178)    # #9AA3B2
+    cor_accent = (217, 255, 0) if is_ml else (56, 189, 248)  # Volt Lime (ML) / Cyan (Magalu)
+    cor_danger = (255, 59, 48)     # #FF3B30
+    cor_store_bg = (255, 230, 0) if is_ml else (0, 134, 255)
+    cor_store_fg = (10, 11, 14) if is_ml else (255, 255, 255)
+
+    # 1. Fundo obsidian + micro-grade arquitetônica + faixa superior de acento
+    canvas = Image.new("RGB", (WIDTH, HEIGHT), cor_bg)
     draw = ImageDraw.Draw(canvas)
+    for gx in range(0, WIDTH, 54):
+        draw.line([(gx, 0), (gx, HEIGHT)], fill=cor_grid, width=1)
+    for gy in range(0, HEIGHT, 54):
+        draw.line([(0, gy), (WIDTH, gy)], fill=cor_grid, width=1)
+    draw.rectangle([0, 0, WIDTH, 10], fill=cor_accent)
 
-    # Faixa sutil de brilho no topo
-    cor_destaque = (255, 230, 0) if is_ml else (0, 134, 255)
-    draw.rectangle([0, 0, WIDTH, 14], fill=cor_destaque)
+    pad_x = 76
+    inner_w = WIDTH - (pad_x * 2)  # 928px
 
-    # 2. Selo da Loja + Selo de Desconto (abaixo da zona segura do topo: y=155)
-    f_badge = _carregar_fonte(34, bold=True)
-    f_disc = _carregar_fonte(38, bold=True)
+    # 2. Masthead editorial abaixo da zona segura do Facebook Stories (y=225)
+    y_head = 225
+    f_brand = _carregar_fonte(34, bold=True)
+    f_tag = _carregar_fonte(24, bold=True)
+    draw.rounded_rectangle([pad_x, y_head + 10, pad_x + 14, y_head + 24], radius=3, fill=cor_accent)
+    draw.text((pad_x + 28, y_head), "GAMESTORE // RADAR", font=f_brand, fill=cor_text)
 
-    texto_loja = "MERCADO LIVRE" if is_ml else "MAGALU OFICIAL"
-    cor_texto_loja = (15, 23, 42) if is_ml else (255, 255, 255)
+    tag_txt = "MENOR PREÇO 30D" if is_min_hist else "OFERTA VERIFICADA"
+    tb = draw.textbbox((0, 0), tag_txt, font=f_tag)
+    tw_tag = (tb[2] - tb[0]) + 36
+    th_tag = 48
+    tx_tag = WIDTH - pad_x - tw_tag
+    draw.rounded_rectangle(
+        [tx_tag, y_head - 4, WIDTH - pad_x, y_head - 4 + th_tag],
+        radius=8, fill=cor_surface, outline=cor_border, width=2,
+    )
+    draw.text((tx_tag + 18, y_head + 6), tag_txt, font=f_tag, fill=cor_accent)
+    draw.line([(pad_x, y_head + 60), (WIDTH - pad_x, y_head + 60)], fill=cor_border, width=2)
 
-    # Pill da loja (esquerda)
-    bbox_l = draw.textbbox((0, 0), texto_loja, font=f_badge)
-    w_loja = (bbox_l[2] - bbox_l[0]) + 56
-    h_pill = 68
-    y_pill = 165
+    # 3. Palco branco de estúdio para foto do produto + selos integrados
+    box_x = pad_x
+    box_y = y_head + 86  # 311px
+    box_w = inner_w      # 928px
+    box_h = 660
 
-    if desconto >= 5:
-        texto_disc = f"-{desconto:.0f}% OFF"
-        bbox_d = draw.textbbox((0, 0), texto_disc, font=f_disc)
-        w_disc = (bbox_d[2] - bbox_d[0]) + 56
-        gap = 24
-        x_start = (WIDTH - (w_loja + gap + w_disc)) // 2
-
-        draw.rounded_rectangle([x_start, y_pill, x_start + w_loja, y_pill + h_pill], radius=34, fill=cor_destaque)
-        draw.text((x_start + 28, y_pill + 15), texto_loja, font=f_badge, fill=cor_texto_loja)
-
-        x_disc = x_start + w_loja + gap
-        draw.rounded_rectangle([x_disc, y_pill, x_disc + w_disc, y_pill + h_pill], radius=34, fill=(239, 68, 68))
-        draw.text((x_disc + 28, y_pill + 13), texto_disc, font=f_disc, fill=(255, 255, 255))
-    else:
-        x_start = (WIDTH - w_loja) // 2
-        draw.rounded_rectangle([x_start, y_pill, x_start + w_loja, y_pill + h_pill], radius=34, fill=cor_destaque)
-        draw.text((x_start + 28, y_pill + 15), texto_loja, font=f_badge, fill=cor_texto_loja)
-
-    # 3. Moldura branca central para foto do produto
-    box_w, box_h = 840, 740
-    box_x = (WIDTH - box_w) // 2
-    box_y = 275
-
-    # Sombra suave
-    draw.rounded_rectangle([box_x + 10, box_y + 14, box_x + box_w + 10, box_y + box_h + 14], radius=42, fill=(6, 10, 24))
-    draw.rounded_rectangle([box_x, box_y, box_x + box_w, box_y + box_h], radius=42, fill=(255, 255, 255))
+    draw.rounded_rectangle([box_x + 8, box_y + 12, box_x + box_w + 8, box_y + box_h + 12], radius=28, fill=(4, 5, 8))
+    draw.rounded_rectangle([box_x, box_y, box_x + box_w, box_y + box_h], radius=28, fill=(255, 255, 255))
 
     if img_bytes:
         try:
@@ -168,51 +174,97 @@ def gerar_card_vertical_9x16(
                 prod = fundo
             else:
                 prod = prod.convert("RGB")
-            prod = ImageOps.contain(prod, (box_w - 80, box_h - 80), Image.Resampling.LANCZOS)
+            prod = ImageOps.contain(prod, (box_w - 110, box_h - 110), Image.Resampling.LANCZOS)
             px = box_x + (box_w - prod.width) // 2
             py = box_y + (box_h - prod.height) // 2
             canvas.paste(prod, (px, py))
         except Exception as e:
             logging.warning(f"Falha ao colar foto do produto no card 9:16: {e}")
 
-    # 4. Título do Produto (até 3 linhas)
-    f_title = _carregar_fonte(46, bold=True)
-    linhas_titulo = textwrap.wrap(titulo, width=28)[:3]
-    y_curr = box_y + box_h + 52
+    # Selo da loja integrado (canto inferior esquerdo do palco)
+    f_store = _carregar_fonte(28, bold=True)
+    texto_loja = "MERCADO LIVRE" if is_ml else "MAGALU OFICIAL"
+    sb = draw.textbbox((0, 0), texto_loja, font=f_store)
+    sw = (sb[2] - sb[0]) + 42
+    sh = 54
+    sx = box_x + 26
+    sy = box_y + box_h - sh - 26
+    draw.rounded_rectangle([sx, sy, sx + sw, sy + sh], radius=10, fill=cor_store_bg)
+    draw.text((sx + 21, sy + 11), texto_loja, font=f_store, fill=cor_store_fg)
+
+    # Carimbo de desconto integrado (canto superior direito do palco)
+    if desconto >= 5:
+        f_disc = _carregar_fonte(46, bold=True)
+        texto_disc = f"-{desconto:.0f}% OFF"
+        db = draw.textbbox((0, 0), texto_disc, font=f_disc)
+        dw = (db[2] - db[0]) + 46
+        dh = 74
+        dx = box_x + box_w - dw - 26
+        dy = box_y + 26
+        draw.rounded_rectangle([dx, dy, dx + dw, dy + dh], radius=14, fill=cor_danger)
+        draw.text((dx + 23, dy + 11), texto_disc, font=f_disc, fill=(255, 255, 255))
+
+    # 4. Título do Produto (alinhado à esquerda, até 2 linhas limpas)
+    f_title = _carregar_fonte(44, bold=True)
+    linhas_titulo = textwrap.wrap(titulo, width=32)[:2]
+    y_curr = box_y + box_h + 36
     for linha in linhas_titulo:
-        _, _, _, th = _centralizar_texto(draw, y_curr, linha, f_title, (248, 250, 252))
-        y_curr += th + 16
+        draw.text((pad_x, y_curr), linha, font=f_title, fill=cor_text)
+        tb_l = draw.textbbox((0, 0), linha, font=f_title)
+        y_curr += (tb_l[3] - tb_l[1]) + 14
 
-    # 5. Bloco de Preços (De -> Por)
-    y_curr += 22
+    # 5. Painel de Preço (#13161D) + Economia Real em Reais
+    panel_y = y_curr + 22
+    panel_h = 228
+    draw.rounded_rectangle(
+        [pad_x, panel_y, WIDTH - pad_x, panel_y + panel_h],
+        radius=24, fill=cor_surface, outline=cor_border, width=2,
+    )
+
+    inner_px = pad_x + 34
     if preco_antigo and float(preco_antigo) > preco_atual:
-        f_old = _carregar_fonte(40, bold=False)
-        txt_old = f"De R$ {float(preco_antigo):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-        ox, oy, ow, oh = _centralizar_texto(draw, y_curr, txt_old, f_old, (148, 163, 184))
-        draw.line([(ox - 8, oy + oh // 2 + 2), (ox + ow + 8, oy + oh // 2 + 2)], fill=(239, 68, 68), width=4)
-        y_curr += oh + 20
+        preco_antigo_f = float(preco_antigo)
+        economia_f = preco_antigo_f - preco_atual
+        f_old = _carregar_fonte(36, bold=True)
+        txt_old = f"DE R$ {preco_antigo_f:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        ob = draw.textbbox((0, 0), txt_old, font=f_old)
+        ow, oh = ob[2] - ob[0], ob[3] - ob[1]
+        oy = panel_y + 28
+        draw.text((inner_px, oy), txt_old, font=f_old, fill=cor_muted)
+        draw.line([(inner_px - 6, oy + oh // 2 + 4), (inner_px + ow + 6, oy + oh // 2 + 4)], fill=cor_danger, width=5)
 
-    f_price = _carregar_fonte(92, bold=True)
+        # Pill ECONOMIZE R$ ... alinhada à direita dentro do painel
+        f_sav = _carregar_fonte(24, bold=True)
+        txt_sav = f"ECONOMIZE R$ {economia_f:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        eb = draw.textbbox((0, 0), txt_sav, font=f_sav)
+        ew = (eb[2] - eb[0]) + 32
+        eh = 44
+        ex = WIDTH - pad_x - 34 - ew
+        ey = panel_y + 24
+        draw.rounded_rectangle([ex, ey, ex + ew, ey + eh], radius=8, fill=(24, 34, 24) if is_ml else (16, 36, 52), outline=cor_accent, width=2)
+        draw.text((ex + 16, ey + 8), txt_sav, font=f_sav, fill=cor_accent)
+
+    f_price = _carregar_fonte(102, bold=True)
     txt_price = f"R$ {preco_atual:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    _, _, _, ph = _centralizar_texto(draw, y_curr, txt_price, f_price, (16, 185, 129))
-    y_curr += ph + 38
+    draw.text((inner_px, panel_y + 88), txt_price, font=f_price, fill=cor_accent)
 
-    # 6. Botão CTA (acima da zona segura inferior do Reels/Stories)
-    f_cta = _carregar_fonte(34, bold=True)
-    cta_txt = "LINK NO 1º COMENTÁRIO!" if modo == "reel" else "PEGUE NO TELEGRAM: @PROMOSGEEKTECH"
-    cta_w, cta_h = 840, 86
-    cta_x = (WIDTH - cta_w) // 2
-    cta_y = min(max(y_curr + 10, 1490), 1560)
+    # 6. Botão CTA branco de alto contraste (com ajuste de fonte para nunca estourar a borda)
+    cta_txt = "LINK NO 1º COMENTÁRIO" if modo == "reel" else "TELEGRAM: @PROMOSGEEKTECH"
+    cta_y = panel_y + panel_h + 30
+    cta_h = 98
+    draw.rounded_rectangle([pad_x, cta_y, WIDTH - pad_x, cta_y + cta_h], radius=20, fill=(255, 255, 255))
+    f_cta = _carregar_fonte(38, bold=True)
+    _centralizar_texto(draw, cta_y + 26, cta_txt, f_cta, (10, 11, 14))
 
-    draw.rounded_rectangle([cta_x, cta_y, cta_x + cta_w, cta_y + cta_h], radius=43, fill=(37, 99, 235))
-    _centralizar_texto(draw, cta_y + 22, cta_txt, f_cta, (255, 255, 255))
+    # Rodapé editorial
+    f_foot = _carregar_fonte(24, bold=True)
+    y_foot = cta_y + cta_h + 24
+    draw.text((pad_x, y_foot), "@PROMOSGEEKTECH", font=f_foot, fill=cor_muted)
+    fb_r = draw.textbbox((0, 0), "ESTOQUE LIMITADO", font=f_foot)
+    draw.text((WIDTH - pad_x - (fb_r[2] - fb_r[0]), y_foot), "ESTOQUE LIMITADO", font=f_foot, fill=cor_muted)
 
-    # Rodapé da marca
-    f_brand = _carregar_fonte(28, bold=False)
-    _centralizar_texto(draw, cta_y + cta_h + 26, "GAMESTORE  •  @promosgeektech", f_brand, (148, 163, 184))
-
-    canvas.save(arquivo_saida, format="JPEG", quality=92)
-    logging.info(f"🎨 Card vertical 9:16 gerado: {arquivo_saida}")
+    canvas.save(arquivo_saida, format="JPEG", quality=93)
+    logging.info(f"🎨 Card vertical 9:16 (Impeccable) gerado: {arquivo_saida}")
     return arquivo_saida
 
 
@@ -809,7 +861,8 @@ def gerar_video_reel_hyperframes(
             tamanho_kb = os.path.getsize(arquivo_saida_abs) // 1024
             logging.info(f"🎬 Reel HyperFrames gerado com sucesso ({duracao_total}s, {tamanho_kb} KB): {arquivo_saida_abs}")
             return arquivo_saida_abs
-        logging.warning(f"HyperFrames retornou código {res.returncode}. Acionando fallback Pillow+ffmpeg.")
+        err_tail = (res.stderr or res.stdout or "").strip()[-400:]
+        logging.warning(f"HyperFrames retornou código {res.returncode} ({err_tail}). Acionando fallback Pillow+ffmpeg.")
     except Exception as e:
         logging.warning(f"Exceção no HyperFrames (acionando fallback Pillow+ffmpeg): {e}")
 

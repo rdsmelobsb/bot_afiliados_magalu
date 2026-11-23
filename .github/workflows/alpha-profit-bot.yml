@@ -14,21 +14,25 @@ jobs:
       - name: '1. Checkout do Repositório'
         uses: actions/checkout@v4
 
-      - name: '2. Configurar Python 3.10'
+      - name: '2. Configurar Python 3.11'
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
       - name: '2.5. Configurar Node.js 22 (HyperFrames Reels)'
         uses: actions/setup-node@v4
         with:
           node-version: '22'
 
-      - name: '3. Instalar Dependências'
+      - name: '3. Instalar Dependências (Python + ffmpeg + HyperFrames)'
         run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
           python -m pip install --upgrade pip
           pip install pandas requests beautifulsoup4 google-generativeai pillow tweepy edge-tts
           npm install -g hyperframes
+          ffmpeg -version | head -n 1
+          hyperframes --version || true
 
       - name: '3.5. Restaurar Históricos (Anti-Repetição 72h + Radar Preços 30d + Métricas)'
         uses: actions/cache/restore@v4

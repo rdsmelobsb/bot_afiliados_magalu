@@ -197,9 +197,13 @@ def extrair_imagem_produto(product):
     if img_url and img_url.startswith("//"):
         img_url = f"https:{img_url}"
 
-    # Melhora resolução de miniaturas para alta qualidade (800x600)
+    # Melhora resolução de miniaturas para alta qualidade (800x600) e resolve template {w}x{h}
     if img_url:
-        img_url = img_url.replace("/186x140/", "/800x600/").replace("/280x210/", "/800x600/")
+        img_url = (
+            img_url.replace("{w}x{h}", "800x600")
+            .replace("/186x140/", "/800x600/")
+            .replace("/280x210/", "/800x600/")
+        )
 
     return img_url
 
@@ -696,6 +700,9 @@ def baixar_imagem_jpeg(imagem_url):
         return None
 
     urls_tentativa = [imagem_url]
+    if "/800x600/" in imagem_url:
+        urls_tentativa.append(imagem_url.replace("/800x600/", "/420x420/"))
+        urls_tentativa.append(imagem_url.replace("/800x600/", "/280x210/"))
     if imagem_url.endswith(".webp"):
         urls_tentativa.append(imagem_url[:-5] + ".jpg")
     elif imagem_url.endswith(".jpg"):
@@ -1616,7 +1623,7 @@ def disparar_facebook_reels_stories(oportunidades_dict, df_todos_produtos=None, 
             if nome_norm:
                 mapa_por_nome[nome_norm] = info
 
-    top_ofertas = sorted(
+    candidatas_ordenadas = sorted(
         oportunidades,
         key=lambda op: (
             _bonus_nicho_gamestore(op) +
@@ -1626,14 +1633,12 @@ def disparar_facebook_reels_stories(oportunidades_dict, df_todos_produtos=None, 
             float(op.get("lucro_estimado_reais", 0.0) or 0.0) * 0.4
         ),
         reverse=True
-    )[:max(max_reels, max_stories)]
+    )
 
-    reels_ok = 0
-    stories_ok = 0
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-    # --- 1. FACEBOOK REELS (MP4 9:16 animado + link no 1º comentário) ---
-    for idx, op in enumerate(top_ofertas[:max_reels], start=1):
+    # Pré-seleciona ofertas com foto válida baixada (nunca publica Reel/Story com caixa branca vazia)
+    top_ofertas_com_foto = []
+    limite_necessario = max(max_reels, max_stories)
+    for op in candidatas_ordenadas:
         sku = str(op.get("sku_selecionado", ""))
         url_op = str(op.get("url_afiliado", "") or "").strip()
         nome_op = str(op.get("nome_produto", "") or "").strip().lower()[:40]
@@ -1642,6 +1647,19 @@ def disparar_facebook_reels_stories(oportunidades_dict, df_todos_produtos=None, 
         imagem_url = op.get("imagem_url") or extra.get("imagem_url")
         preco_antigo = op.get("preco_antigo") or extra.get("preco_antigo")
         img_bytes = baixar_imagem_jpeg(imagem_url) if imagem_url else None
+        if not img_bytes:
+            logging.warning(f"Pulando oferta sem foto válida para Reel/Story: {op.get('nome_produto', '')[:50]}")
+            continue
+        top_ofertas_com_foto.append((op, img_bytes, preco_antigo, url_op))
+        if len(top_ofertas_com_foto) >= limite_necessario:
+            break
+
+    reels_ok = 0
+    stories_ok = 0
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    # --- 1. FACEBOOK REELS (MP4 9:16 animado + link no 1º comentário) ---
+    for idx, (op, img_bytes, preco_antigo, url_op) in enumerate(top_ofertas_com_foto[:max_reels], start=1):
 
         voz_path = gerar_locucao_ptbr(
             op, preco_antigo=preco_antigo,
@@ -1732,15 +1750,7 @@ def disparar_facebook_reels_stories(oportunidades_dict, df_todos_produtos=None, 
             logging.warning(f"Exceção ao publicar Facebook Reel: {e}")
 
     # --- 2. FACEBOOK STORIES (Cards 9:16 HD) ---
-    for idx, op in enumerate(top_ofertas[:max_stories], start=1):
-        sku = str(op.get("sku_selecionado", ""))
-        url_op = str(op.get("url_afiliado", "") or "").strip()
-        nome_op = str(op.get("nome_produto", "") or "").strip().lower()[:40]
-        extra = mapa_por_sku.get(sku) or mapa_por_url.get(url_op) or mapa_por_nome.get(nome_op) or {}
-
-        imagem_url = op.get("imagem_url") or extra.get("imagem_url")
-        preco_antigo = op.get("preco_antigo") or extra.get("preco_antigo")
-        img_bytes = baixar_imagem_jpeg(imagem_url) if imagem_url else None
+    for idx, (op, img_bytes, preco_antigo, url_op) in enumerate(top_ofertas_com_foto[:max_stories], start=1):
 
         story_path = gerar_card_vertical_9x16(
             op, img_bytes=img_bytes, preco_antigo=preco_antigo, modo="story",
