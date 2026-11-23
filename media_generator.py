@@ -1,5 +1,8 @@
+import asyncio
 import logging
+import math
 import os
+import re
 import shutil
 import subprocess
 import textwrap
@@ -11,9 +14,16 @@ try:
 except ImportError:
     PILLOW_OK = False
 
+try:
+    import edge_tts
+    EDGE_TTS_OK = True
+except ImportError:
+    EDGE_TTS_OK = False
+
 OUTPUT_DIR = "media_output"
 WIDTH = 1080
 HEIGHT = 1920
+VOZ_PADRAO_REEL = "pt-BR-ThalitaMultilingualNeural"
 
 
 def _carregar_fonte(tamanho, bold=True):
@@ -204,10 +214,102 @@ def gerar_card_vertical_9x16(
     return arquivo_saida
 
 
-def gerar_video_reel_mp4(imagem_card_path, arquivo_saida=None, duracao_segundos=8):
+def _formatar_preco_falado(valor):
+    """Formata um float para leitura natural em português (ex: 199.90 -> '199 reais e 90 centavos')."""
+    reais = int(valor)
+    centavos = int(round((valor - reais) * 100))
+    if centavos == 0:
+        return f"{reais} reais"
+    return f"{reais} reais e {centavos} centavos"
+
+
+def gerar_locucao_ptbr(
+    oportunidade,
+    preco_antigo=None,
+    arquivo_saida=None,
+    voice=VOZ_PADRAO_REEL,
+    rate="+10%",
+):
+    """
+    Gera locução neural em PT-BR (gratuita via edge-tts, voz ThalitaMultilingualNeural)
+    para narrar o achado no Reel com pronúncia natural de termos gamer/tech.
+    """
+    if not EDGE_TTS_OK:
+        logging.warning("Biblioteca 'edge-tts' não instalada. Reel será gerado sem locução.")
+        return None
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    if not arquivo_saida:
+        arquivo_saida = os.path.join(OUTPUT_DIR, "reel_voz.mp3")
+
+    copy = oportunidade.get("copy_venda", {})
+    nome_raw = (oportunidade.get("nome_produto") or copy.get("titulo") or "esse produto").strip()
+    # Limpa símbolos/emojis e limita a ~65 chars para uma fala ágil e envolvente
+    nome_limpo = re.sub(r"[^\w\sÀ-ÿ\-\+\.]", " ", nome_raw)
+    nome_limpo = re.sub(r"\s+", " ", nome_limpo).strip()
+    if len(nome_limpo) > 65:
+        nome_limpo = nome_limpo[:65].rsplit(" ", 1)[0]
+
+    preco_atual = float(oportunidade.get("preco_atual", 0.0) or 0.0)
+    desconto = float(oportunidade.get("percentual_desconto", 0.0) or 0.0)
+
+    partes = [f"Alerta de oferta! {nome_limpo}"]
+    if preco_antigo and float(preco_antigo) > preco_atual:
+        partes.append(f"caiu de {int(round(float(preco_antigo)))} reais por apenas {_formatar_preco_falado(preco_atual)}!")
+    else:
+        partes.append(f"por apenas {_formatar_preco_falado(preco_atual)}!")
+
+    if desconto >= 10:
+        partes.append(f"São {int(round(desconto))} por cento de desconto!")
+
+    partes.append("Link no primeiro comentário!")
+    texto_fala = " ".join(partes)
+
+    try:
+        async def _run():
+            comm = edge_tts.Communicate(texto_fala, voice=voice, rate=rate)
+            await comm.save(arquivo_saida)
+
+        asyncio.run(_run())
+        if os.path.exists(arquivo_saida) and os.path.getsize(arquivo_saida) > 1000:
+            logging.info(f"🎙️ Locução PT-BR ({voice}) gerada: {arquivo_saida}")
+            return arquivo_saida
+    except Exception as e:
+        logging.warning(f"Falha ao gerar locução edge-tts (seguindo sem voz): {e}")
+
+    return None
+
+
+def _obter_duracao_audio(audio_path):
+    """Obtém a duração exata do áudio em segundos via ffprobe para nunca cortar a locução."""
+    ffprobe_bin = shutil.which("ffprobe")
+    if not ffprobe_bin or not audio_path or not os.path.exists(audio_path):
+        return None
+    try:
+        res = subprocess.run(
+            [
+                ffprobe_bin,
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                audio_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return float(res.stdout.strip())
+    except Exception:
+        pass
+    return None
+
+
+def gerar_video_reel_mp4(imagem_card_path, arquivo_saida=None, duracao_segundos=9, audio_path=None):
     """
     Converte o card vertical 1080x1920 em um vídeo MP4 pronto para Reels/Shorts/TikTok
-    usando ffmpeg (efeito de zoom suave + fade-in + faixa AAC silenciosa para 100% de compatibilidade Meta).
+    usando ffmpeg (zoom suave + fade-in + locução PT-BR da Thalita ou faixa AAC silenciosa).
+    Ajusta automaticamente a duração do vídeo para o tempo exato da locução + 0,8s.
     """
     if not imagem_card_path or not os.path.exists(imagem_card_path):
         return None
@@ -221,23 +323,33 @@ def gerar_video_reel_mp4(imagem_card_path, arquivo_saida=None, duracao_segundos=
     if not arquivo_saida:
         arquivo_saida = os.path.join(OUTPUT_DIR, "reel_oferta.mp4")
 
+    tem_audio_real = bool(audio_path and os.path.exists(audio_path))
+    if tem_audio_real:
+        dur_audio = _obter_duracao_audio(audio_path)
+        if dur_audio:
+            duracao_segundos = max(8, min(20, int(math.ceil(dur_audio + 0.8))))
+
     fps = 30
     total_frames = duracao_segundos * fps
     # Zoom suave de 1.00x até ~1.08x centralizado + fade in de 0.4s
     vf = (
         f"scale=1080:1920,"
-        f"zoompan=z='min(zoom+0.00035,1.08)':d={total_frames}:"
+        f"zoompan=z='min(zoom+0.00028,1.08)':d={total_frames}:"
         f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920:fps={fps},"
         f"fade=t=in:st=0:d=0.4,format=yuv420p"
     )
+
+    if tem_audio_real:
+        audio_inputs = ["-i", audio_path]
+    else:
+        audio_inputs = ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
 
     cmd = [
         ffmpeg_bin,
         "-y",
         "-loop", "1",
         "-i", imagem_card_path,
-        "-f", "lavfi",
-        "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+        *audio_inputs,
         "-vf", vf,
         "-t", str(duracao_segundos),
         "-c:v", "libx264",
@@ -246,15 +358,15 @@ def gerar_video_reel_mp4(imagem_card_path, arquivo_saida=None, duracao_segundos=
         "-c:a", "aac",
         "-b:a", "128k",
         "-movflags", "+faststart",
-        "-shortest",
         arquivo_saida,
     ]
 
     try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         if res.returncode == 0 and os.path.exists(arquivo_saida):
             tamanho_kb = os.path.getsize(arquivo_saida) // 1024
-            logging.info(f"🎬 Vídeo Reel MP4 gerado ({tamanho_kb} KB): {arquivo_saida}")
+            modo_som = "com locução PT-BR" if tem_audio_real else "sem locução"
+            logging.info(f"🎬 Vídeo Reel MP4 gerado ({duracao_segundos}s, {tamanho_kb} KB, {modo_som}): {arquivo_saida}")
             return arquivo_saida
         logging.error(f"ffmpeg falhou ao gerar Reel: {res.stderr[-400:]}")
     except Exception as e:

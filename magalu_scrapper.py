@@ -1481,7 +1481,12 @@ def disparar_facebook_reels_stories(oportunidades_dict, df_todos_produtos=None, 
         return 0, 0
 
     try:
-        from media_generator import gerar_card_vertical_9x16, gerar_video_reel_mp4, OUTPUT_DIR
+        from media_generator import (
+            gerar_card_vertical_9x16,
+            gerar_locucao_ptbr,
+            gerar_video_reel_mp4,
+            OUTPUT_DIR,
+        )
     except Exception as imp_err:
         logging.warning(f"Módulo media_generator indisponível: {imp_err}")
         return 0, 0
@@ -1562,10 +1567,15 @@ def disparar_facebook_reels_stories(oportunidades_dict, df_todos_produtos=None, 
             op, img_bytes=img_bytes, preco_antigo=preco_antigo, modo="reel",
             arquivo_saida=os.path.join(OUTPUT_DIR, f"reel_card_{idx}.jpg")
         )
+        voz_path = gerar_locucao_ptbr(
+            op, preco_antigo=preco_antigo,
+            arquivo_saida=os.path.join(OUTPUT_DIR, f"reel_voz_{idx}.mp3")
+        )
         mp4_path = gerar_video_reel_mp4(
             card_path,
             arquivo_saida=os.path.join(OUTPUT_DIR, f"reel_oferta_{idx}.mp4"),
-            duracao_segundos=8
+            duracao_segundos=9,
+            audio_path=voz_path
         )
         if not mp4_path or not os.path.exists(mp4_path):
             continue
