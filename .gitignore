@@ -6,3 +6,4 @@ venv/
 .venv/
 historico_postados.json
 historico_metricas.json
+media_output/

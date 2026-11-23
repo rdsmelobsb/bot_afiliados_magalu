@@ -1466,6 +1466,224 @@ def disparar_facebook_page(oportunidades_dict, df_todos_produtos=None, max_posts
     return sucessos
 
 
+def disparar_facebook_reels_stories(oportunidades_dict, df_todos_produtos=None, max_reels=1, max_stories=2):
+    """
+    Gera criativos verticais 9:16 (1080x1920) com Pillow + ffmpeg e publica automaticamente
+    como Facebook Reels (MP4 animado + link no 1º comentário) e Facebook Stories (card HD)
+    na Página usando o mesmo FACEBOOK_PAGE_TOKEN (100% gratuito).
+    """
+    page_token = os.getenv("FACEBOOK_PAGE_TOKEN")
+    if not page_token:
+        return 0, 0
+
+    oportunidades = oportunidades_dict.get("oportunidades", [])
+    if not oportunidades:
+        return 0, 0
+
+    try:
+        from media_generator import gerar_card_vertical_9x16, gerar_video_reel_mp4, OUTPUT_DIR
+    except Exception as imp_err:
+        logging.warning(f"Módulo media_generator indisponível: {imp_err}")
+        return 0, 0
+
+    # Autentica na Página (mesma lógica do feed: converte User Token -> Page Token se necessário)
+    page_id = os.getenv("FACEBOOK_PAGE_ID")
+    try:
+        acc_resp = requests.get(
+            "https://graph.facebook.com/v21.0/me/accounts",
+            params={"fields": "id,name,access_token", "access_token": page_token},
+            timeout=12
+        )
+        if acc_resp.status_code == 200:
+            paginas = acc_resp.json().get("data", [])
+            if paginas:
+                escolhida = next((p for p in paginas if page_id and str(p.get("id")) == str(page_id)), paginas[0])
+                page_id = escolhida.get("id")
+                if escolhida.get("access_token"):
+                    page_token = escolhida["access_token"]
+    except Exception:
+        pass
+
+    if not page_id:
+        try:
+            me_resp = requests.get(
+                "https://graph.facebook.com/v21.0/me",
+                params={"fields": "id,name", "access_token": page_token},
+                timeout=12
+            )
+            if me_resp.status_code == 200:
+                page_id = me_resp.json().get("id")
+        except Exception:
+            return 0, 0
+
+    if not page_id:
+        return 0, 0
+
+    # Indexa imagens e preços antigos
+    mapa_por_sku, mapa_por_url, mapa_por_nome = {}, {}, {}
+    if df_todos_produtos is not None and not df_todos_produtos.empty:
+        for _, row in df_todos_produtos.iterrows():
+            info = {"imagem_url": row.get("imagem_url"), "preco_antigo": row.get("preco_antigo")}
+            sku = str(row.get("sku", ""))
+            url_af = str(row.get("url_afiliado", "") or "")
+            nome_norm = str(row.get("nome_produto", "") or "").strip().lower()[:40]
+            if sku:
+                mapa_por_sku[sku] = info
+            if url_af:
+                mapa_por_url[url_af] = info
+            if nome_norm:
+                mapa_por_nome[nome_norm] = info
+
+    top_ofertas = sorted(
+        oportunidades,
+        key=lambda op: (
+            float(op.get("percentual_desconto", 0.0) or 0.0) * 0.6 +
+            float(op.get("lucro_estimado_reais", 0.0) or 0.0) * 0.4
+        ),
+        reverse=True
+    )[:max(max_reels, max_stories)]
+
+    reels_ok = 0
+    stories_ok = 0
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    # --- 1. FACEBOOK REELS (MP4 9:16 animado + link no 1º comentário) ---
+    for idx, op in enumerate(top_ofertas[:max_reels], start=1):
+        sku = str(op.get("sku_selecionado", ""))
+        url_op = str(op.get("url_afiliado", "") or "").strip()
+        nome_op = str(op.get("nome_produto", "") or "").strip().lower()[:40]
+        extra = mapa_por_sku.get(sku) or mapa_por_url.get(url_op) or mapa_por_nome.get(nome_op) or {}
+
+        imagem_url = op.get("imagem_url") or extra.get("imagem_url")
+        preco_antigo = op.get("preco_antigo") or extra.get("preco_antigo")
+        img_bytes = baixar_imagem_jpeg(imagem_url) if imagem_url else None
+
+        card_path = gerar_card_vertical_9x16(
+            op, img_bytes=img_bytes, preco_antigo=preco_antigo, modo="reel",
+            arquivo_saida=os.path.join(OUTPUT_DIR, f"reel_card_{idx}.jpg")
+        )
+        mp4_path = gerar_video_reel_mp4(
+            card_path,
+            arquivo_saida=os.path.join(OUTPUT_DIR, f"reel_oferta_{idx}.mp4"),
+            duracao_segundos=8
+        )
+        if not mp4_path or not os.path.exists(mp4_path):
+            continue
+
+        try:
+            # Fase 1: Start
+            r_start = requests.post(
+                f"https://graph.facebook.com/v21.0/{page_id}/video_reels",
+                data={"upload_phase": "start", "access_token": page_token},
+                timeout=15
+            )
+            if r_start.status_code != 200:
+                logging.warning(f"Facebook Reels start falhou ({r_start.status_code}): {r_start.text}")
+                continue
+            video_id = r_start.json().get("video_id")
+            upload_url = r_start.json().get("upload_url") or f"https://rupload.facebook.com/video-upload/v21.0/{video_id}"
+
+            # Fase 2: Upload binário MP4
+            with open(mp4_path, "rb") as f_mp4:
+                mp4_bytes = f_mp4.read()
+            r_up = requests.post(
+                upload_url,
+                headers={
+                    "Authorization": f"OAuth {page_token}",
+                    "offset": "0",
+                    "file_size": str(len(mp4_bytes)),
+                },
+                data=mp4_bytes,
+                timeout=60
+            )
+            if r_up.status_code != 200:
+                logging.warning(f"Facebook Reels upload falhou ({r_up.status_code}): {r_up.text}")
+                continue
+
+            # Fase 3: Finish & Publish
+            legenda_reel = formatar_texto_facebook(op, preco_antigo=preco_antigo)
+            r_fin = requests.post(
+                f"https://graph.facebook.com/v21.0/{page_id}/video_reels",
+                data={
+                    "upload_phase": "finish",
+                    "video_id": video_id,
+                    "video_state": "PUBLISHED",
+                    "description": legenda_reel,
+                    "access_token": page_token,
+                },
+                timeout=25
+            )
+            if r_fin.status_code == 200:
+                reels_ok += 1
+                logging.info(f"🎬 Facebook Reel {reels_ok}/{max_reels} publicado com sucesso (video_id: {video_id})!")
+                if video_id and url_op:
+                    time.sleep(4)
+                    try:
+                        requests.post(
+                            f"https://graph.facebook.com/v21.0/{video_id}/comments",
+                            data={"message": f"🛒 Garanta a oferta aqui: {url_op}", "access_token": page_token},
+                            timeout=12
+                        )
+                    except Exception:
+                        pass
+            else:
+                logging.warning(f"Facebook Reels finish falhou ({r_fin.status_code}): {r_fin.text}")
+        except Exception as e:
+            logging.warning(f"Exceção ao publicar Facebook Reel: {e}")
+
+    # --- 2. FACEBOOK STORIES (Cards 9:16 HD) ---
+    for idx, op in enumerate(top_ofertas[:max_stories], start=1):
+        sku = str(op.get("sku_selecionado", ""))
+        url_op = str(op.get("url_afiliado", "") or "").strip()
+        nome_op = str(op.get("nome_produto", "") or "").strip().lower()[:40]
+        extra = mapa_por_sku.get(sku) or mapa_por_url.get(url_op) or mapa_por_nome.get(nome_op) or {}
+
+        imagem_url = op.get("imagem_url") or extra.get("imagem_url")
+        preco_antigo = op.get("preco_antigo") or extra.get("preco_antigo")
+        img_bytes = baixar_imagem_jpeg(imagem_url) if imagem_url else None
+
+        story_path = gerar_card_vertical_9x16(
+            op, img_bytes=img_bytes, preco_antigo=preco_antigo, modo="story",
+            arquivo_saida=os.path.join(OUTPUT_DIR, f"story_oferta_{idx}.jpg")
+        )
+        if not story_path or not os.path.exists(story_path):
+            continue
+
+        try:
+            with open(story_path, "rb") as f_st:
+                st_bytes = f_st.read()
+            # Passo 1: Upload como foto não publicada
+            r_ph = requests.post(
+                f"https://graph.facebook.com/v21.0/{page_id}/photos",
+                data={"published": "false", "access_token": page_token},
+                files={"source": (f"story_{idx}.jpg", st_bytes, "image/jpeg")},
+                timeout=20
+            )
+            if r_ph.status_code != 200 or not r_ph.json().get("id"):
+                logging.warning(f"Facebook Story upload foto falhou ({r_ph.status_code}): {r_ph.text}")
+                continue
+            photo_id = r_ph.json()["id"]
+
+            # Passo 2: Publica como Story da Página
+            r_st = requests.post(
+                f"https://graph.facebook.com/v21.0/{page_id}/photo_stories",
+                data={"photo_id": photo_id, "access_token": page_token},
+                timeout=15
+            )
+            if r_st.status_code == 200:
+                stories_ok += 1
+                logging.info(f"📱 Facebook Story {stories_ok}/{max_stories} publicado com sucesso!")
+            else:
+                logging.warning(f"Facebook Story falhou ({r_st.status_code}): {r_st.text}")
+        except Exception as e:
+            logging.warning(f"Exceção ao publicar Facebook Story: {e}")
+
+        time.sleep(3)
+
+    logging.info(f"🎬📱 Finalizado Meta Vertical: {reels_ok}/{max_reels} Reels e {stories_ok}/{max_stories} Stories publicados!")
+    return reels_ok, stories_ok
+
+
 # --- 3.5. Controle de Histórico Anti-Repetição (72 horas) ---
 
 HISTORICO_ARQUIVO = "historico_postados.json"
@@ -1701,6 +1919,14 @@ if __name__ == "__main__":
         max_posts=5,
         intervalo_segundos=6
     ) or 0
+
+    # 🎬📱 DISPARO AUTOMÁTICO DE REELS (1 MP4) + STORIES (2 Cards 9:16) NA PÁGINA DO FACEBOOK
+    reels_fb, stories_fb = disparar_facebook_reels_stories(
+        oportunidades_dict=oportunidades_dict,
+        df_todos_produtos=df_produtos,
+        max_reels=1,
+        max_stories=2
+    )
 
     # Atualiza o histórico de 72h para que os próximos disparos tragam novidades
     if skus_postados:

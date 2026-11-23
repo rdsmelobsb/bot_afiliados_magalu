@@ -63,7 +63,7 @@ jobs:
             historico_metricas.json
           key: historico-bot-${{ github.run_id }}
 
-      - name: '5. Salvar Artefatos (Dashboard HTML + Resultados)'
+      - name: '5. Salvar Artefatos (Dashboard HTML + Reels/Stories + Resultados)'
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -71,7 +71,8 @@ jobs:
           path: |
             dashboard_acompanhamento.html
             historico_metricas.json
+            media_output/
             produtos_extraidos.csv
             insumo_ia.json
             oportunidades_alpha_profit.json
-          retention-days: 14 # Guarda o dashboard e resultados por 14 dias
+          retention-days: 14 # Guarda o dashboard, Reels/Stories e resultados por 14 dias
