@@ -1278,6 +1278,46 @@ def disparar_threads(oportunidades_dict, df_todos_produtos=None, max_posts=5, in
     return sucessos
 
 
+def _bonus_nicho_gamestore(op):
+    """
+    Calcula bônus/penalidade de aderência à marca Gamestore (Games, Hardware Gamer & Áudio)
+    para garantir que Reels, Stories e Feed da Página nunca desperdicem destaque com itens
+    fora do nicho (ex: fechadura, cadeado, vitrola, eletrodomésticos).
+    """
+    copy = op.get("copy_venda", {})
+    texto = " ".join([
+        str(op.get("nome_produto", "") or ""),
+        str(op.get("categoria", "") or ""),
+        str(copy.get("titulo", "") or ""),
+    ]).lower()
+
+    termos_fora_nicho = [
+        "fechadura", "cadeado", "vitrola", "camera wi-fi", "câmera wi-fi",
+        "lampada", "lâmpada", "tomada", "interruptor", "geladeira",
+        "fritadeira", "panela", "aspirador", "cafeteira", "ventilador", "chaleira"
+    ]
+    if any(t in texto for t in termos_fora_nicho):
+        return -150.0
+
+    termos_gamer_forte = [
+        "ps5", "ps4", "playstation", "xbox", "nintendo", "switch", "gamer",
+        "headset", "controle", "joystick", "dualsense", "ssd", "nvme",
+        "mouse", "teclado", "mecanico", "mecânico", "monitor", "rtx", "gtx",
+        "placa de video", "placa de vídeo", "console", "jogo", "gta", "fifa",
+        "ea fc", "call of duty", "dark souls", "halo", "red dead", "hyperx",
+        "logitech", "razer", "corsair", "redragon", "fifine", "havit",
+        "jbl", "fone", "bluetooth", "tws", "notebook", "gabinete", "ram"
+    ]
+    if any(t in texto for t in termos_gamer_forte):
+        return 180.0
+
+    cat = str(op.get("categoria", "") or "").lower()
+    if any(c in cat for c in ("game", "informática", "informatica", "áudio", "audio", "tech")):
+        return 90.0
+
+    return 0.0
+
+
 # --- 3.4.6. Publicação Automática na Página do Facebook (Foto Limpa + Link no 1º Comentário) ---
 
 def formatar_texto_facebook(oportunidade, preco_antigo=None):
@@ -1402,10 +1442,11 @@ def disparar_facebook_page(oportunidades_dict, df_todos_produtos=None, max_posts
             if nome_norm:
                 mapa_por_nome[nome_norm] = info
 
-    # Seleciona as Top N ofertas (Quedas Reais do Radar + desconto + lucro estimado)
+    # Seleciona as Top N ofertas (Nicho Gamestore + Quedas Reais do Radar + desconto + lucro estimado)
     selecionadas = sorted(
         oportunidades,
         key=lambda op: (
+            _bonus_nicho_gamestore(op) +
             (100.0 if op.get("menor_preco_historico") else 0.0) +
             float(op.get("queda_real_percent", 0.0) or 0.0) * 2.0 +
             float(op.get("percentual_desconto", 0.0) or 0.0) * 0.6 +
@@ -1578,6 +1619,7 @@ def disparar_facebook_reels_stories(oportunidades_dict, df_todos_produtos=None, 
     top_ofertas = sorted(
         oportunidades,
         key=lambda op: (
+            _bonus_nicho_gamestore(op) +
             (100.0 if op.get("menor_preco_historico") else 0.0) +
             float(op.get("queda_real_percent", 0.0) or 0.0) * 2.0 +
             float(op.get("percentual_desconto", 0.0) or 0.0) * 0.6 +
