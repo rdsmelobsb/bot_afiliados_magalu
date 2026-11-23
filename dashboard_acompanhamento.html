@@ -107,7 +107,7 @@
     <header>
       <div>
         <h1>📊 Alpha-Profit — Painel de Acompanhamento</h1>
-        <div class="subtitle">Telegram (@promosgeektech) • Threads • Facebook • X (Modo Econômico) | Gerado em 21/11/2026 às 17:36</div>
+        <div class="subtitle">Telegram (@promosgeektech) • Threads • Facebook • X (Modo Econômico) | Gerado em 23/11/2026 às 14:32</div>
       </div>
       <div class="tabs">
         <button class="tab-btn active" onclick="switchTab('bot', this)">🤖 Operação do Bot</button>
@@ -127,6 +127,24 @@
         <div class="card">
           <h2>🏷️ Categorias Mais Mineradas pelo Bot</h2>
           <div id="categories-box"></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom: 18px;">
+        <h2>📘 Performance da Página Facebook (Gamestore) — Top Posts Recentes</h2>
+        <div class="overflow-x">
+          <table>
+            <thead>
+              <tr>
+                <th>Data</th>
+                <th>Publicação</th>
+                <th class="num">Curtidas</th>
+                <th class="num">Comentários</th>
+                <th class="num">Compart.</th>
+              </tr>
+            </thead>
+            <tbody id="fb-top-posts"></tbody>
+          </table>
         </div>
       </div>
 
@@ -254,6 +272,12 @@
       const firstMembers = validMembers.length ? validMembers[0].membros_telegram : null;
       const deltaMembers = (latestMembers !== null && firstMembers !== null) ? (latestMembers - firstMembers) : 0;
 
+      const validFb = BOT_HISTORY.filter(r => r.seguidores_facebook !== null && r.seguidores_facebook !== undefined);
+      const latestFb = validFb.length ? validFb[validFb.length - 1].seguidores_facebook : null;
+      const firstFb = validFb.length ? validFb[0].seguidores_facebook : null;
+      const deltaFb = (latestFb !== null && firstFb !== null) ? (latestFb - firstFb) : 0;
+      const latestReach = validFb.length ? validFb[validFb.length - 1].alcance_fb_28d : null;
+
       document.getElementById("bot-kpis").innerHTML = `
         <div class="card">
           <div class="kpi-label">Membros no Telegram</div>
@@ -261,21 +285,38 @@
           <div class="kpi-sub">${deltaMembers >= 0 ? "+" + deltaMembers : deltaMembers} desde o início do tracking</div>
         </div>
         <div class="card">
+          <div class="kpi-label">Seguidores Facebook</div>
+          <div class="kpi-value text-blue">${latestFb !== null ? latestFb.toLocaleString("pt-BR") : "—"}</div>
+          <div class="kpi-sub">${deltaFb >= 0 ? "+" + deltaFb : deltaFb} seg.${latestReach !== null ? " • Alcance 28d: " + latestReach.toLocaleString("pt-BR") : ""}</div>
+        </div>
+        <div class="card">
           <div class="kpi-label">Ofertas Publicadas</div>
           <div class="kpi-value text-green">${(totalTG + totalThreads + totalFB + totalX).toLocaleString("pt-BR")}</div>
           <div class="kpi-sub">TG: ${totalTG} • Threads: ${totalThreads} • FB: ${totalFB} • X: ${totalX}</div>
         </div>
         <div class="card">
-          <div class="kpi-label">Execuções Registradas</div>
-          <div class="kpi-value">${totalRuns}</div>
-          <div class="kpi-sub">Agenda: 3x ao dia (10h, 15h, 20h BRT)</div>
-        </div>
-        <div class="card">
           <div class="kpi-label">Custo Estimado API X</div>
           <div class="kpi-value text-yellow">${fmtUSD(totalXUsd)}</div>
-          <div class="kpi-sub">≈ ${fmtBRL(totalXUsd * USD_BRL)} (Modo Econômico)</div>
+          <div class="kpi-sub">≈ ${fmtBRL(totalXUsd * USD_BRL)} (${totalRuns} execuções)</div>
         </div>
       `;
+
+      // Top Posts do Facebook (Gamestore)
+      const latestWithPosts = [...BOT_HISTORY].reverse().find(r => Array.isArray(r.top_posts_fb) && r.top_posts_fb.length > 0);
+      const fbTbody = document.getElementById("fb-top-posts");
+      if (!latestWithPosts) {
+        fbTbody.innerHTML = `<tr><td colspan="5" class="empty">Aguardando próxima execução com FACEBOOK_PAGE_TOKEN para listar os melhores posts da Gamestore!</td></tr>`;
+      } else {
+        fbTbody.innerHTML = latestWithPosts.top_posts_fb.map(p => `
+          <tr>
+            <td>${p.date}</td>
+            <td>${p.title}</td>
+            <td class="num">${p.likes}</td>
+            <td class="num">${p.comments}</td>
+            <td class="num">${p.shares}</td>
+          </tr>
+        `).join("");
+      }
 
       // Categorias
       const catCounts = {};

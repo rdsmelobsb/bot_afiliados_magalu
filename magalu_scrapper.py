@@ -2189,12 +2189,17 @@ if __name__ == "__main__":
     try:
         from dashboard_generator import (
             obter_membros_telegram,
+            obter_metricas_facebook_page,
             registrar_metricas_execucao,
             gerar_dashboard_html,
         )
         membros_tg = obter_membros_telegram(
             os.getenv("TELEGRAM_BOT_TOKEN"),
             os.getenv("TELEGRAM_CHAT_ID"),
+        )
+        fb_insights = obter_metricas_facebook_page(
+            os.getenv("FACEBOOK_PAGE_TOKEN"),
+            os.getenv("FACEBOOK_PAGE_ID"),
         )
         qtd_ml = int((df_produtos["loja"] == "Mercado Livre").sum()) if "loja" in df_produtos.columns else 0
         qtd_magalu = int((df_produtos["loja"] == "Magalu").sum()) if "loja" in df_produtos.columns else 0
@@ -2206,6 +2211,7 @@ if __name__ == "__main__":
             postados_facebook=posts_facebook,
             postados_x=posts_x,
             membros_telegram=membros_tg,
+            fb_insights=fb_insights,
             oportunidades_dict=oportunidades_dict,
         )
         gerar_dashboard_html(hist_metricas)

@@ -26,6 +26,101 @@ def obter_membros_telegram(bot_token, chat_id):
     return None
 
 
+def _http_get_json(url, timeout=12):
+    """Helper stdlib GET JSON sem dependências externas."""
+    try:
+        with urlopen(url, timeout=timeout) as resp:
+            if resp.status == 200:
+                return json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        pass
+    return None
+
+
+def obter_metricas_facebook_page(page_token, page_id=None):
+    """
+    Coleta métricas oficiais da Página do Facebook via Meta Graph API (100% gratuito):
+      - Seguidores e Curtidas (followers_count / fan_count)
+      - Ranking dos Top 10 posts recentes por engajamento (curtidas, comentários, compartilhamentos)
+      - Alcance de 28 dias (se a permissão opcional read_insights estiver ativa)
+    """
+    if not page_token:
+        return None
+
+    # 1. Converte User Token -> Page Token se necessário via /me/accounts
+    acc_url = f"https://graph.facebook.com/v21.0/me/accounts?{urlencode({'fields': 'id,name,access_token', 'access_token': page_token})}"
+    acc_data = _http_get_json(acc_url)
+    if acc_data and acc_data.get("data"):
+        paginas = acc_data["data"]
+        escolhida = next((p for p in paginas if page_id and str(p.get("id")) == str(page_id)), paginas[0])
+        page_id = escolhida.get("id")
+        if escolhida.get("access_token"):
+            page_token = escolhida["access_token"]
+
+    # 2. Dados gerais da Página (nome, seguidores, curtidas)
+    alvo = page_id or "me"
+    info_url = f"https://graph.facebook.com/v21.0/{alvo}?{urlencode({'fields': 'id,name,followers_count,fan_count,category', 'access_token': page_token})}"
+    info = _http_get_json(info_url)
+    if not info or not info.get("id"):
+        return None
+
+    page_id = info["id"]
+    resultado = {
+        "page_name": info.get("name", "Página Facebook"),
+        "followers": info.get("followers_count"),
+        "fans": info.get("fan_count"),
+        "category": info.get("category", ""),
+        "reach_28d": None,
+        "top_posts": [],
+    }
+
+    # 3. Últimos 25 posts para ranking de performance (curtidas, comentários, compartilhamentos)
+    posts_qs = urlencode({
+        "fields": "id,message,created_time,shares,likes.summary(true),comments.summary(true)",
+        "limit": 25,
+        "access_token": page_token,
+    })
+    posts_data = _http_get_json(f"https://graph.facebook.com/v21.0/{page_id}/posts?{posts_qs}")
+    if posts_data and posts_data.get("data"):
+        posts_norm = []
+        for p in posts_data["data"]:
+            likes = int(((p.get("likes") or {}).get("summary") or {}).get("total_count", 0) or 0)
+            comments = int(((p.get("comments") or {}).get("summary") or {}).get("total_count", 0) or 0)
+            shares = int((p.get("shares") or {}).get("count", 0) or 0)
+            msg = str(p.get("message") or "(Post sem texto / Mídia)").replace("\n", " ").strip()
+            posts_norm.append({
+                "date": str(p.get("created_time", ""))[:16].replace("T", " "),
+                "title": (msg[:75] + "...") if len(msg) > 78 else msg,
+                "likes": likes,
+                "comments": comments,
+                "shares": shares,
+                "score": likes + (comments * 2) + (shares * 3),
+            })
+        posts_norm.sort(key=lambda x: x["score"], reverse=True)
+        resultado["top_posts"] = posts_norm[:10]
+
+    # 4. Alcance de 28 dias (opcional — funciona se read_insights estiver ativo)
+    ins_qs = urlencode({
+        "metric": "page_impressions_unique",
+        "period": "days_28",
+        "access_token": page_token,
+    })
+    ins_data = _http_get_json(f"https://graph.facebook.com/v21.0/{page_id}/insights?{ins_qs}")
+    if ins_data and ins_data.get("data"):
+        try:
+            vals = ins_data["data"][0].get("values", [])
+            if vals:
+                resultado["reach_28d"] = int(vals[-1].get("value", 0) or 0)
+        except Exception:
+            pass
+
+    logging.info(
+        f"📘 Métricas Facebook ({resultado['page_name']}): "
+        f"{resultado['followers']} seguidores | {len(resultado['top_posts'])} posts analisados."
+    )
+    return resultado
+
+
 def carregar_historico_metricas(caminho=METRICAS_ARQUIVO):
     if not os.path.exists(caminho):
         return []
@@ -46,6 +141,7 @@ def registrar_metricas_execucao(
     postados_facebook=0,
     postados_x=0,
     membros_telegram=None,
+    fb_insights=None,
     oportunidades_dict=None,
     caminho=METRICAS_ARQUIVO,
 ):
@@ -67,6 +163,10 @@ def registrar_metricas_execucao(
     elif raspados_ml == 0 or raspados_magalu == 0:
         status = "PARCIAL"
 
+    # Remove top_posts_fb de registros antigos para manter o JSON compacto
+    for item in historico:
+        item.pop("top_posts_fb", None)
+
     registro = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "raspados_ml": int(raspados_ml or 0),
@@ -76,6 +176,10 @@ def registrar_metricas_execucao(
         "postados_facebook": int(postados_facebook or 0),
         "postados_x": int(postados_x or 0),
         "membros_telegram": membros_telegram,
+        "seguidores_facebook": fb_insights.get("followers") if fb_insights else None,
+        "alcance_fb_28d": fb_insights.get("reach_28d") if fb_insights else None,
+        "pagina_fb_nome": fb_insights.get("page_name") if fb_insights else None,
+        "top_posts_fb": fb_insights.get("top_posts", []) if fb_insights else [],
         "custo_x_usd": custo_x_usd,
         "categorias": categorias,
         "status": status,
@@ -238,6 +342,24 @@ def gerar_dashboard_html(historico=None, arquivo_saida=DASHBOARD_ARQUIVO):
         </div>
       </div>
 
+      <div class="card" style="margin-bottom: 18px;">
+        <h2>📘 Performance da Página Facebook (Gamestore) — Top Posts Recentes</h2>
+        <div class="overflow-x">
+          <table>
+            <thead>
+              <tr>
+                <th>Data</th>
+                <th>Publicação</th>
+                <th class="num">Curtidas</th>
+                <th class="num">Comentários</th>
+                <th class="num">Compart.</th>
+              </tr>
+            </thead>
+            <tbody id="fb-top-posts"></tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="card">
         <h2>🕒 Histórico de Execuções do Bot (GitHub Actions)</h2>
         <div class="overflow-x">
@@ -362,6 +484,12 @@ def gerar_dashboard_html(historico=None, arquivo_saida=DASHBOARD_ARQUIVO):
       const firstMembers = validMembers.length ? validMembers[0].membros_telegram : null;
       const deltaMembers = (latestMembers !== null && firstMembers !== null) ? (latestMembers - firstMembers) : 0;
 
+      const validFb = BOT_HISTORY.filter(r => r.seguidores_facebook !== null && r.seguidores_facebook !== undefined);
+      const latestFb = validFb.length ? validFb[validFb.length - 1].seguidores_facebook : null;
+      const firstFb = validFb.length ? validFb[0].seguidores_facebook : null;
+      const deltaFb = (latestFb !== null && firstFb !== null) ? (latestFb - firstFb) : 0;
+      const latestReach = validFb.length ? validFb[validFb.length - 1].alcance_fb_28d : null;
+
       document.getElementById("bot-kpis").innerHTML = `
         <div class="card">
           <div class="kpi-label">Membros no Telegram</div>
@@ -369,21 +497,38 @@ def gerar_dashboard_html(historico=None, arquivo_saida=DASHBOARD_ARQUIVO):
           <div class="kpi-sub">${{deltaMembers >= 0 ? "+" + deltaMembers : deltaMembers}} desde o início do tracking</div>
         </div>
         <div class="card">
+          <div class="kpi-label">Seguidores Facebook</div>
+          <div class="kpi-value text-blue">${{latestFb !== null ? latestFb.toLocaleString("pt-BR") : "—"}}</div>
+          <div class="kpi-sub">${{deltaFb >= 0 ? "+" + deltaFb : deltaFb}} seg.${{latestReach !== null ? " • Alcance 28d: " + latestReach.toLocaleString("pt-BR") : ""}}</div>
+        </div>
+        <div class="card">
           <div class="kpi-label">Ofertas Publicadas</div>
           <div class="kpi-value text-green">${{(totalTG + totalThreads + totalFB + totalX).toLocaleString("pt-BR")}}</div>
           <div class="kpi-sub">TG: ${{totalTG}} • Threads: ${{totalThreads}} • FB: ${{totalFB}} • X: ${{totalX}}</div>
         </div>
         <div class="card">
-          <div class="kpi-label">Execuções Registradas</div>
-          <div class="kpi-value">${{totalRuns}}</div>
-          <div class="kpi-sub">Agenda: 3x ao dia (10h, 15h, 20h BRT)</div>
-        </div>
-        <div class="card">
           <div class="kpi-label">Custo Estimado API X</div>
           <div class="kpi-value text-yellow">${{fmtUSD(totalXUsd)}}</div>
-          <div class="kpi-sub">≈ ${{fmtBRL(totalXUsd * USD_BRL)}} (Modo Econômico)</div>
+          <div class="kpi-sub">≈ ${{fmtBRL(totalXUsd * USD_BRL)}} (${{totalRuns}} execuções)</div>
         </div>
       `;
+
+      // Top Posts do Facebook (Gamestore)
+      const latestWithPosts = [...BOT_HISTORY].reverse().find(r => Array.isArray(r.top_posts_fb) && r.top_posts_fb.length > 0);
+      const fbTbody = document.getElementById("fb-top-posts");
+      if (!latestWithPosts) {{
+        fbTbody.innerHTML = `<tr><td colspan="5" class="empty">Aguardando próxima execução com FACEBOOK_PAGE_TOKEN para listar os melhores posts da Gamestore!</td></tr>`;
+      }} else {{
+        fbTbody.innerHTML = latestWithPosts.top_posts_fb.map(p => `
+          <tr>
+            <td>${{p.date}}</td>
+            <td>${{p.title}}</td>
+            <td class="num">${{p.likes}}</td>
+            <td class="num">${{p.comments}}</td>
+            <td class="num">${{p.shares}}</td>
+          </tr>
+        `).join("");
+      }}
 
       // Categorias
       const catCounts = {{}};
