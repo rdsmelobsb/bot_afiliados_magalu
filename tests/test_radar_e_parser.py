@@ -475,6 +475,100 @@ class TestRadar180dEParserGemini(unittest.TestCase):
         ):
             self.assertIn(flag, wf_txt)
 
+    def test_cota_dinamica_gemini_e_filtro_lixeira_no_telegram(self):
+        from unittest.mock import patch
+
+        # 1. Cota dinâmica no prompt do Gemini
+        so_magalu = json.dumps([{"sku": f"MAG_{i}", "loja": "Magalu"} for i in range(25)])
+        so_ml = json.dumps([{"sku": f"ML_{i}", "loja": "Mercado Livre"} for i in range(25)])
+        misto = json.dumps(
+            [{"sku": f"ML_{i}", "loja": "Mercado Livre"} for i in range(15)]
+            + [{"sku": f"MAG_{j}", "loja": "Magalu"} for j in range(10)]
+        )
+
+        p_mg = magalu_scrapper.montar_prompt_usuario_gemini(so_magalu, qtd_ml=0, qtd_magalu=20)
+        self.assertIn("EXATAMENTE 20 Oportunidades de Ouro da Magalu", p_mg)
+        self.assertIn("ignore a cota do ML", p_mg)
+
+        p_ml = magalu_scrapper.montar_prompt_usuario_gemini(so_ml, qtd_ml=20, qtd_magalu=0)
+        self.assertIn("EXATAMENTE 20 Oportunidades de Ouro do Mercado Livre", p_ml)
+
+        p_mix = magalu_scrapper.montar_prompt_usuario_gemini(misto, qtd_ml=15, qtd_magalu=5)
+        self.assertIn("15 do Mercado Livre e 5 da Magalu", p_mix)
+
+        # 2. Penalidade de nicho para lixeira e fechadura
+        self.assertEqual(
+            magalu_scrapper._bonus_nicho_gamestore({"nome_produto": "Lixeira Sensor Automática Banheiro 12L"}),
+            -150.0,
+        )
+        self.assertEqual(
+            magalu_scrapper._bonus_nicho_gamestore({"nome_produto": "Fechadura Inteligente de Embutir Wi-Fi"}),
+            -150.0,
+        )
+
+        # 3. Telegram Top 10 descarta lixeiras/fechaduras mesmo com desconto alto
+        tech_items = [
+            {
+                "sku_selecionado": f"MAG_TECH_{i}",
+                "nome_produto": f"Headset Gamer RGB Modelo {i}",
+                "loja": "Magalu",
+                "categoria": "Games",
+                "preco_atual": 199.0 + i,
+                "percentual_desconto": 20.0,
+                "lucro_estimado_reais": 8.0,
+                "url_afiliado": f"https://magalu.test/tech_{i}",
+                "menor_preco_historico": False,
+                "queda_real_percent": 10.0,
+                "copy_venda": {"titulo": f"Headset Gamer {i}", "corpo": "Ok", "cta": "Vai"},
+            }
+            for i in range(11)
+        ]
+        fora_nicho = [
+            {
+                "sku_selecionado": "MAG_LIXEIRA_1",
+                "nome_produto": "Lixeira Sensor Automática Banheiro Preta",
+                "loja": "Magalu",
+                "categoria": "Casa Inteligente",
+                "preco_atual": 99.0,
+                "percentual_desconto": 55.0,
+                "lucro_estimado_reais": 5.0,
+                "url_afiliado": "https://magalu.test/lix1",
+                "menor_preco_historico": False,
+                "queda_real_percent": 15.0,
+                "copy_venda": {"titulo": "Lixeira Sensor", "corpo": "Ok", "cta": "Vai"},
+            },
+            {
+                "sku_selecionado": "MAG_FECH_1",
+                "nome_produto": "Fechadura Inteligente de Embutir",
+                "loja": "Magalu",
+                "categoria": "Casa Inteligente",
+                "preco_atual": 299.0,
+                "percentual_desconto": 50.0,
+                "lucro_estimado_reais": 12.0,
+                "url_afiliado": "https://magalu.test/fech1",
+                "menor_preco_historico": False,
+                "queda_real_percent": 15.0,
+                "copy_venda": {"titulo": "Fechadura Wi-Fi", "corpo": "Ok", "cta": "Vai"},
+            },
+        ]
+
+        postados = []
+        with patch.dict(os.environ, {"TELEGRAM_MAX_POSTS": "10"}, clear=False):
+            with patch.object(
+                magalu_scrapper,
+                "enviar_oportunidade_telegram",
+                side_effect=lambda bot, chat, op, **kw: postados.append(op["sku_selecionado"]) or True,
+            ):
+                with patch.object(magalu_scrapper.time, "sleep", return_value=None):
+                    magalu_scrapper.disparar_canal_telegram(
+                        "bot", "@promosgeektech", {"oportunidades": fora_nicho + tech_items}, intervalo_segundos=0
+                    )
+
+        self.assertEqual(len(postados), 10)
+        self.assertNotIn("MAG_LIXEIRA_1", postados)
+        self.assertNotIn("MAG_FECH_1", postados)
+        self.assertTrue(all(sku.startswith("MAG_TECH_") for sku in postados))
+
 
 if __name__ == "__main__":
     unittest.main()

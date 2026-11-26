@@ -708,7 +708,44 @@ def _extrair_texto_resposta_gemini(result):
     return texto, finish_reason
 
 
-def gemini_fx(dados_json):
+def montar_prompt_usuario_gemini(dados_json, qtd_ml=15, qtd_magalu=5):
+    """Monta instrução do usuário adaptando dinamicamente a cota quando uma das lojas retorna 0 itens."""
+    itens = []
+    try:
+        parsed = json.loads(dados_json) if isinstance(dados_json, str) else dados_json
+        if isinstance(parsed, list):
+            itens = parsed
+    except Exception:
+        itens = []
+
+    n_ml = sum(1 for x in itens if "mercado" in str((x or {}).get("loja", "")).lower())
+    n_mg = sum(1 for x in itens if "magalu" in str((x or {}).get("loja", "")).lower())
+    alvo_padrao = int(qtd_ml) + int(qtd_magalu)
+    total_alvo = min(alvo_padrao, len(itens)) if itens else alvo_padrao
+
+    if itens and n_ml == 0 and n_mg > 0:
+        regra_cota = (
+            f"EXATAMENTE {total_alvo} Oportunidades de Ouro da Magalu "
+            f"(nesta rodada o Mercado Livre não retornou itens; ignore a cota do ML e preencha todas as {total_alvo} ofertas com itens variados da Magalu)"
+        )
+    elif itens and n_mg == 0 and n_ml > 0:
+        regra_cota = (
+            f"EXATAMENTE {total_alvo} Oportunidades de Ouro do Mercado Livre "
+            f"(nesta rodada a Magalu não retornou itens; preencha todas as {total_alvo} ofertas com o Mercado Livre)"
+        )
+    else:
+        regra_cota = (
+            f"EXATAMENTE {total_alvo} Oportunidades de Ouro "
+            f"({qtd_ml} do Mercado Livre e {qtd_magalu} da Magalu)"
+        )
+
+    return (
+        f"Analise o catálogo abaixo e retorne {regra_cota}, priorizando variedade de produtos e categorias "
+        f"(foco em Tech, Games, Hardware, Celulares e Áudio), seguindo as regras do sistema:\n\n{dados_json}"
+    )
+
+
+def gemini_fx(dados_json, qtd_ml=15, qtd_magalu=5):
     if not configurar_gemini(obrigatorio=False):
         return json.dumps(
             {"erro": "A análise da IA falhou", "motivo": "Gemini SDK ou GEMINI_API_KEY indisponível"},
@@ -727,11 +764,7 @@ def gemini_fx(dados_json):
                 "max_output_tokens": 8192,
             }
         )
-        prompt_usuario = (
-            "Analise o catálogo abaixo e retorne EXATAMENTE 20 Oportunidades de Ouro "
-            "(15 do Mercado Livre e 5 da Magalu), priorizando variedade de produtos e categorias, "
-            f"seguindo as regras do sistema:\n\n{dados_json}"
-        )
+        prompt_usuario = montar_prompt_usuario_gemini(dados_json, qtd_ml=qtd_ml, qtd_magalu=qtd_magalu)
         result = model.generate_content(
             prompt_usuario,
             safety_settings={
@@ -1326,6 +1359,7 @@ def disparar_canal_telegram(bot_token, chat_id, oportunidades_dict, df_todos_pro
     oportunidades_selecionadas = sorted(
         oportunidades,
         key=lambda op: (
+            _bonus_nicho_gamestore(op) +
             (150.0 if op.get("menor_preco_historico") else 0.0) +
             float(op.get("queda_real_percent", 0.0) or 0.0) * 3.0 +
             float(op.get("percentual_desconto", 0.0) or 0.0) * 0.6 +
@@ -1776,7 +1810,8 @@ def _bonus_nicho_gamestore(op):
     termos_fora_nicho = [
         "fechadura", "cadeado", "vitrola", "camera wi-fi", "câmera wi-fi",
         "lampada", "lâmpada", "tomada", "interruptor", "geladeira",
-        "fritadeira", "panela", "aspirador", "cafeteira", "ventilador", "chaleira"
+        "fritadeira", "panela", "aspirador", "cafeteira", "ventilador", "chaleira",
+        "lixeira", "dispenser", "saboneteira", "baba", "babá", "banheiro", "cozinha",
     ]
     if any(t in texto for t in termos_fora_nicho):
         return -150.0
@@ -2644,7 +2679,7 @@ if __name__ == "__main__":
         POOL_MAGALU = [
             "https://www.magazinevoce.com.br/magazinedealz/informatica/l/in/",
             "https://www.magazinevoce.com.br/magazinedealz/games/l/ga/",
-            "https://www.magazinevoce.com.br/magazinedealz/casa-inteligente/l/ci/",
+            "https://www.magazinevoce.com.br/magazinedealz/tv-e-video/l/et/",
             "https://www.magazinevoce.com.br/magazinedealz/celulares-e-smartphones/l/te/",
             "https://www.magazinevoce.com.br/magazinedealz/audio/l/ea/",
         ]
@@ -2775,21 +2810,32 @@ if __name__ == "__main__":
 
         if not df_ml.empty and not df_magalu.empty:
             df_ordenado_para_ia = pd.concat([df_ml, df_magalu], ignore_index=True)
+            qtd_ml_alvo, qtd_magalu_alvo = 15, 5
+        elif df_ml.empty and not df_magalu.empty:
+            df_ordenado_para_ia = df_produtos.sort_values(by="score_qualidade", ascending=False).head(120)
+            qtd_ml_alvo, qtd_magalu_alvo = 0, 20
+        elif df_magalu.empty and not df_ml.empty:
+            df_ordenado_para_ia = df_produtos.sort_values(by="score_qualidade", ascending=False).head(120)
+            qtd_ml_alvo, qtd_magalu_alvo = 20, 0
         else:
             df_ordenado_para_ia = df_produtos.sort_values(by="score_qualidade", ascending=False).head(120)
+            qtd_ml_alvo, qtd_magalu_alvo = 15, 5
 
-        logging.info(f"Enviando {len(df_ordenado_para_ia)} candidatos inéditos para a IA escolher as 20 melhores (15 ML + 5 Magalu)...")
+        logging.info(
+            f"Enviando {len(df_ordenado_para_ia)} candidatos inéditos para a IA escolher "
+            f"as {qtd_ml_alvo + qtd_magalu_alvo} melhores ({qtd_ml_alvo} ML + {qtd_magalu_alvo} Magalu)..."
+        )
         json_input_data = gerar_json_para_ia(df_ordenado_para_ia.drop(columns=["score_qualidade"]))
 
         logging.info("\n=== CHAMANDO ALPHA-PROFIT (GEMINI) ===")
-        json_final_output = gemini_fx(json_input_data)
+        json_final_output = gemini_fx(json_input_data, qtd_ml=qtd_ml_alvo, qtd_magalu=qtd_magalu_alvo)
 
         # Parsing blindado da resposta do Gemini com fallback determinístico caso falhe
         oportunidades_dict = parsear_resposta_gemini(
             json_final_output,
             candidatas_fallback=df_ordenado_para_ia,
-            qtd_ml=15,
-            qtd_magalu=5,
+            qtd_ml=qtd_ml_alvo,
+            qtd_magalu=qtd_magalu_alvo,
         )
         oportunidades_dict = enriquecer_oportunidades_com_radar(oportunidades_dict, df_produtos)
 
