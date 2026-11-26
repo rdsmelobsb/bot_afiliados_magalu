@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import os
+import random
 import re
 import shutil
 import subprocess
@@ -24,9 +25,245 @@ except ImportError:
     EDGE_TTS_OK = False
 
 OUTPUT_DIR = "media_output"
+ASSETS_BACKGROUNDS_DIR = os.path.join("assets", "backgrounds")
+ASSETS_OUTROS_DIR = os.path.join("assets", "outros")
 WIDTH = 1080
 HEIGHT = 1920
 VOZ_PADRAO_REEL = "pt-BR-ThalitaMultilingualNeural"
+
+
+def _env_bool_media(nome, default=True):
+    val = os.getenv(nome)
+    if val is None or str(val).strip() == "":
+        return bool(default)
+    return str(val).strip().lower() in ("1", "true", "sim", "yes", "on")
+
+
+def _obter_caminho_fonte_ffmpeg():
+    """Retorna o caminho TrueType existente para filtros drawtext do FFmpeg."""
+    for path in (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "C:/Windows/Fonts/arialbd.ttf",
+        "C:/Windows/Fonts/segoeuib.ttf",
+    ):
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def selecionar_broll_fundo(backgrounds_dir=None):
+    """Seleciona aleatoriamente um B-Roll .mp4 válido em assets/backgrounds/, ou None se vazio/desabilitado."""
+    if not _env_bool_media("REEL_BROLL_ENABLED", default=True):
+        return None
+    alvo_dir = backgrounds_dir or ASSETS_BACKGROUNDS_DIR
+    if not os.path.isdir(alvo_dir):
+        return None
+    candidatos = [
+        os.path.join(alvo_dir, nome)
+        for nome in sorted(os.listdir(alvo_dir))
+        if nome.lower().endswith(".mp4")
+        and os.path.isfile(os.path.join(alvo_dir, nome))
+        and os.path.getsize(os.path.join(alvo_dir, nome)) > 0
+    ]
+    if not candidatos:
+        return None
+    return random.choice(candidatos)
+
+
+def selecionar_outro_gamestore(outros_dir=None):
+    """Retorna assets/outros/outro_gamestore.mp4 (ou 1º .mp4 válido), ou None se vazio/desabilitado."""
+    if not _env_bool_media("REEL_OUTRO_ENABLED", default=True):
+        return None
+    alvo_dir = outros_dir or ASSETS_OUTROS_DIR
+    if not os.path.isdir(alvo_dir):
+        return None
+    arquivos = [
+        nome
+        for nome in sorted(os.listdir(alvo_dir))
+        if nome.lower().endswith(".mp4")
+        and os.path.isfile(os.path.join(alvo_dir, nome))
+        and os.path.getsize(os.path.join(alvo_dir, nome)) > 0
+    ]
+    if not arquivos:
+        return None
+    preferido = next((n for n in arquivos if n.lower() == "outro_gamestore.mp4"), None)
+    return os.path.join(alvo_dir, preferido or arquivos[0])
+
+
+def _video_tem_audio(video_path):
+    """Verifica via ffprobe se o vídeo possui ao menos uma faixa de áudio."""
+    ffprobe_bin = shutil.which("ffprobe")
+    if not ffprobe_bin or not video_path or not os.path.exists(video_path):
+        return False
+    try:
+        res = subprocess.run(
+            [
+                ffprobe_bin,
+                "-v", "error",
+                "-select_streams", "a:0",
+                "-show_entries", "stream=codec_type",
+                "-of", "csv=p=0",
+                video_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return res.returncode == 0 and "audio" in (res.stdout or "").lower()
+    except Exception:
+        return False
+
+
+def preparar_broll_fundo_mp4(broll_path, duracao_segundos, arquivo_saida):
+    """
+    Normaliza um B-Roll do Google Flow em loop contínuo cortado na duração exata:
+    1080x1920, 30fps, yuv420p, com scrim escuro (black@0.60) para legibilidade máxima.
+    """
+    if not broll_path or not os.path.exists(broll_path):
+        return None
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if not ffmpeg_bin:
+        return None
+
+    os.makedirs(os.path.dirname(os.path.abspath(arquivo_saida)), exist_ok=True)
+    dur_str = f"{max(1.0, float(duracao_segundos)):.2f}"
+    vf = (
+        "scale=1080:1920:force_original_aspect_ratio=increase,"
+        "crop=1080:1920,fps=30,"
+        "drawbox=x=0:y=0:w=iw:h=ih:color=black@0.60:t=fill,"
+        "format=yuv420p"
+    )
+    cmd = [
+        ffmpeg_bin,
+        "-y",
+        "-stream_loop", "-1",
+        "-i", broll_path,
+        "-t", dur_str,
+        "-vf", vf,
+        "-an",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "23",
+        "-movflags", "+faststart",
+        arquivo_saida,
+    ]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if res.returncode == 0 and os.path.exists(arquivo_saida) and os.path.getsize(arquivo_saida) > 10000:
+            logging.info(f"🎞️ B-Roll de fundo normalizado ({dur_str}s): {os.path.basename(broll_path)}")
+            return arquivo_saida
+        logging.warning(f"Falha ao normalizar B-Roll ({res.returncode}): {(res.stderr or '')[-300:]}")
+    except Exception as exc:
+        logging.warning(f"Exceção ao preparar B-Roll de fundo: {exc}")
+    return None
+
+
+def anexar_outro_gamestore(
+    reel_path,
+    outro_path=None,
+    arquivo_saida=None,
+    cta_texto="SIGA @PROMOSGEEKTECH • LINK NA BIO",
+):
+    """
+    Concatena a vinheta Outro de ~2s da Gamestore ao final do Reel com normalização obrigatória
+    (1080x1920, 30fps, yuv420p, AAC 44100Hz estéreo), injetando anullsrc se algum clipe não tiver áudio
+    e adicionando o CTA discreto na Safe Zone acima dos últimos 540px.
+    """
+    if not reel_path or not os.path.exists(reel_path):
+        return reel_path
+
+    outro_alvo = outro_path if outro_path is not None else selecionar_outro_gamestore()
+    if not outro_alvo or not os.path.exists(outro_alvo):
+        return reel_path
+
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if not ffmpeg_bin:
+        logging.warning("ffmpeg indisponível para anexar Outro Gamestore. Mantendo Reel original.")
+        return reel_path
+
+    reel_tem_audio = _video_tem_audio(reel_path)
+    outro_tem_audio = _video_tem_audio(outro_alvo)
+    dur_reel = _obter_duracao_audio(reel_path) or 10.0
+    dur_outro = _obter_duracao_audio(outro_alvo) or 2.0
+
+    inputs = ["-i", reel_path, "-i", outro_alvo]
+    next_idx = 2
+
+    if reel_tem_audio:
+        a0_expr = "[0:a]aresample=44100,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a0]"
+    else:
+        inputs.extend(["-f", "lavfi", "-t", f"{dur_reel:.2f}", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"])
+        a0_expr = f"[{next_idx}:a]atrim=duration={dur_reel:.2f},aresample=44100,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a0]"
+        next_idx += 1
+
+    if outro_tem_audio:
+        a1_expr = "[1:a]aresample=44100,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a1]"
+    else:
+        inputs.extend(["-f", "lavfi", "-t", f"{dur_outro:.2f}", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"])
+        a1_expr = f"[{next_idx}:a]atrim=duration={dur_outro:.2f},aresample=44100,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a1]"
+        next_idx += 1
+
+    drawtext_cta = ""
+    cta_limpo = re.sub(r"[:'\";\\]", " ", str(cta_texto or "")).strip()
+    if cta_limpo:
+        font_path = _obter_caminho_fonte_ffmpeg()
+        font_opt = ""
+        if font_path:
+            font_esc = font_path.replace("\\", "/").replace(":", "\\:")
+            font_opt = f"fontfile='{font_esc}':"
+        # Posicionado em y=1290 (mantém os últimos ~540px / 28% da base livres — Safe Zone Reels)
+        drawtext_cta = (
+            f",drawtext={font_opt}text='{cta_limpo}':"
+            "fontcolor=#F5F7FA:fontsize=30:x=(w-text_w)/2:y=1290:"
+            "box=1:boxcolor=0x0A0B0E@0.72:boxborderw=18"
+        )
+
+    filter_complex = ";".join([
+        "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,"
+        "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=#0A0B0E,fps=30,setsar=1,format=yuv420p[v0]",
+        f"[1:v]scale=1080:1920:force_original_aspect_ratio=increase,"
+        f"crop=1080:1920,fps=30,setsar=1{drawtext_cta},format=yuv420p[v1]",
+        a0_expr,
+        a1_expr,
+        "[v0][a0][v1][a1]concat=n=2:v=1:a=1[vout][aout]",
+    ])
+
+    destino = arquivo_saida or reel_path
+    destino_tmp = f"{destino}.outro_tmp.mp4"
+    cmd = [
+        ffmpeg_bin,
+        "-y",
+        *inputs,
+        "-filter_complex", filter_complex,
+        "-map", "[vout]",
+        "-map", "[aout]",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "23",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-movflags", "+faststart",
+        destino_tmp,
+    ]
+
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        if res.returncode == 0 and os.path.exists(destino_tmp) and os.path.getsize(destino_tmp) > 10000:
+            os.replace(destino_tmp, destino)
+            logging.info(f"⚡ Vinheta Outro Gamestore anexada ao Reel: {destino}")
+            return destino
+        logging.warning(f"FFmpeg concat Outro falhou ({res.returncode}): {(res.stderr or '')[-400:]}")
+    except Exception as exc:
+        logging.warning(f"Exceção ao anexar Outro Gamestore: {exc}")
+    finally:
+        if os.path.exists(destino_tmp):
+            try:
+                os.remove(destino_tmp)
+            except Exception:
+                pass
+
+    return reel_path
 
 
 def _carregar_fonte(tamanho, bold=True):
@@ -143,7 +380,7 @@ def gerar_card_vertical_9x16(
     draw.rounded_rectangle([pad_x, y_head + 10, pad_x + 14, y_head + 24], radius=3, fill=cor_accent)
     draw.text((pad_x + 28, y_head), "GAMESTORE // RADAR", font=f_brand, fill=cor_text)
 
-    tag_txt = "MENOR PREÇO 30D" if is_min_hist else "OFERTA VERIFICADA"
+    tag_txt = "MENOR PREÇO 180D" if is_min_hist else "OFERTA VERIFICADA"
     tb = draw.textbbox((0, 0), tag_txt, font=f_tag)
     tw_tag = (tb[2] - tb[0]) + 36
     th_tag = 48
@@ -361,10 +598,17 @@ def _obter_duracao_audio(audio_path):
     return None
 
 
-def gerar_video_reel_mp4(imagem_card_path, arquivo_saida=None, duracao_segundos=9, audio_path=None):
+def gerar_video_reel_mp4(
+    imagem_card_path,
+    arquivo_saida=None,
+    duracao_segundos=9,
+    audio_path=None,
+    usar_broll=True,
+    aplicar_outro=True,
+):
     """
     Converte o card vertical 1080x1920 em um vídeo MP4 pronto para Reels/Shorts/TikTok
-    usando ffmpeg (zoom suave + fade-in + locução PT-BR da Thalita ou faixa AAC silenciosa).
+    usando ffmpeg (suporte a B-Roll em loop + zoom suave + fade-in + locução da Thalita + Outro 2s).
     Ajusta automaticamente a duração do vídeo para o tempo exato da locução + 0,8s.
     """
     if not imagem_card_path or not os.path.exists(imagem_card_path):
@@ -387,35 +631,68 @@ def gerar_video_reel_mp4(imagem_card_path, arquivo_saida=None, duracao_segundos=
 
     fps = 30
     total_frames = duracao_segundos * fps
-    # Zoom suave de 1.00x até ~1.08x centralizado + fade in de 0.4s (suporta 9:16 1080x1920)
-    vf = (
-        f"scale=1080:1920,"
-        f"zoompan=z='min(zoom+0.00028,1.08)':d={total_frames}:"
-        f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920:fps={fps},"
-        f"fade=t=in:st=0:d=0.4,format=yuv420p"
-    )
+    broll_path = selecionar_broll_fundo() if usar_broll else None
+    is_png_alpha = str(imagem_card_path).lower().endswith(".png")
 
     if tem_audio_real:
         audio_inputs = ["-i", audio_path]
+        audio_idx = 2 if (broll_path and is_png_alpha) else 1
     else:
         audio_inputs = ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
+        audio_idx = 2 if (broll_path and is_png_alpha) else 1
 
-    cmd = [
-        ffmpeg_bin,
-        "-y",
-        "-loop", "1",
-        "-i", imagem_card_path,
-        *audio_inputs,
-        "-vf", vf,
-        "-t", str(duracao_segundos),
-        "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-crf", "23",
-        "-c:a", "aac",
-        "-b:a", "128k",
-        "-movflags", "+faststart",
-        arquivo_saida,
-    ]
+    if broll_path and is_png_alpha:
+        filter_complex = (
+            f"[0:v]scale=1080:1920:force_original_aspect_ratio=increase,"
+            f"crop=1080:1920,fps={fps},"
+            f"drawbox=x=0:y=0:w=iw:h=ih:color=black@0.60:t=fill[bg];"
+            f"[1:v]scale=1080:1920,fade=t=in:st=0:d=0.4[fg];"
+            f"[bg][fg]overlay=0:0:shortest=1,format=yuv420p[v]"
+        )
+        cmd = [
+            ffmpeg_bin,
+            "-y",
+            "-stream_loop", "-1",
+            "-i", broll_path,
+            "-loop", "1",
+            "-i", imagem_card_path,
+            *audio_inputs,
+            "-filter_complex", filter_complex,
+            "-map", "[v]",
+            "-map", f"{audio_idx}:a",
+            "-t", str(duracao_segundos),
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "23",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-movflags", "+faststart",
+            arquivo_saida,
+        ]
+    else:
+        # Zoom suave de 1.00x até ~1.08x centralizado + fade in de 0.4s (suporta 9:16 1080x1920)
+        vf = (
+            f"scale=1080:1920,"
+            f"zoompan=z='min(zoom+0.00028,1.08)':d={total_frames}:"
+            f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920:fps={fps},"
+            f"fade=t=in:st=0:d=0.4,format=yuv420p"
+        )
+        cmd = [
+            ffmpeg_bin,
+            "-y",
+            "-loop", "1",
+            "-i", imagem_card_path,
+            *audio_inputs,
+            "-vf", vf,
+            "-t", str(duracao_segundos),
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "23",
+            "-c:a", "aac",
+            "-b:a", "128k",
+            "-movflags", "+faststart",
+            arquivo_saida,
+        ]
 
     try:
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
@@ -423,6 +700,8 @@ def gerar_video_reel_mp4(imagem_card_path, arquivo_saida=None, duracao_segundos=
             tamanho_kb = os.path.getsize(arquivo_saida) // 1024
             modo_som = "com locução PT-BR" if tem_audio_real else "sem locução"
             logging.info(f"🎬 Vídeo Reel MP4 gerado ({duracao_segundos}s, {tamanho_kb} KB, {modo_som}): {arquivo_saida}")
+            if aplicar_outro:
+                return anexar_outro_gamestore(arquivo_saida)
             return arquivo_saida
         logging.error(f"ffmpeg falhou ao gerar Reel: {res.stderr[-400:]}")
     except Exception as e:
@@ -541,7 +820,22 @@ def gerar_video_reel_hyperframes(
         )
 
     is_min_hist = bool(oportunidade.get("menor_preco_historico"))
-    header_alert_txt = "MENOR PREÇO 30D" if is_min_hist else "OFERTA VERIFICADA"
+    header_alert_txt = "MENOR PREÇO 180D" if is_min_hist else "OFERTA VERIFICADA"
+    broll_selecionado = selecionar_broll_fundo()
+    broll_pronto = None
+    if broll_selecionado:
+        broll_pronto = preparar_broll_fundo_mp4(
+            broll_selecionado,
+            duracao_total,
+            os.path.join(assets_dir, "broll_bg.mp4"),
+        )
+    broll_html = (
+        f'<video id="broll-bg" src="./assets/broll_bg.mp4" muted playsinline '
+        f'data-start="0" data-duration="{duracao_total}" data-track-index="0"></video>'
+        '<div id="broll-scrim"></div>'
+        if broll_pronto
+        else ""
+    )
     header_icon_svg = (
         '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 18 13.5 8.5 8.5 13.5 1 6"></polyline><polyline points="17 18 23 18 23 12"></polyline></svg>'
         if is_min_hist
@@ -590,6 +884,14 @@ def gerar_video_reel_hyperframes(
           linear-gradient(to bottom, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
         background-size: 54px 54px;
         mask-image: radial-gradient(ellipse 85% 75% at 50% 42%, #000 35%, transparent 100%);
+      }}
+      #broll-bg {{
+        position: absolute; inset: 0; width: 1080px; height: 1920px;
+        object-fit: cover; z-index: 0;
+      }}
+      #broll-scrim {{
+        position: absolute; inset: 0; pointer-events: none; z-index: 1;
+        background: radial-gradient(ellipse 90% 80% at 50% 45%, rgba(10, 11, 14, 0.55) 0%, rgba(10, 11, 14, 0.78) 100%);
       }}
       /* Faixa superior limpa da marca */
       #top-accent {{
@@ -762,6 +1064,7 @@ def gerar_video_reel_hyperframes(
     <div id="root" data-composition-id="main" data-start="0" data-duration="{duracao_total}" data-width="1080" data-height="1920">
       <div id="top-accent"></div>
       <div id="bg-grid"></div>
+      {broll_html}
       <div id="stage" class="clip" data-start="0" data-duration="{duracao_total}" data-track-index="0">
         <header id="masthead">
           <div id="brand-lockup">
@@ -861,7 +1164,7 @@ def gerar_video_reel_hyperframes(
         if res.returncode == 0 and os.path.exists(arquivo_saida_abs) and os.path.getsize(arquivo_saida_abs) > 50000:
             tamanho_kb = os.path.getsize(arquivo_saida_abs) // 1024
             logging.info(f"🎬 Reel HyperFrames gerado com sucesso ({duracao_total}s, {tamanho_kb} KB): {arquivo_saida_abs}")
-            return arquivo_saida_abs
+            return anexar_outro_gamestore(arquivo_saida_abs)
         err_tail = (res.stderr or res.stdout or "").strip()[-400:]
         logging.warning(f"HyperFrames retornou código {res.returncode} ({err_tail}). Acionando fallback Pillow+ffmpeg.")
     except Exception as e:
@@ -1424,7 +1727,7 @@ def gerar_reel_editorial_rss(
             if res.returncode == 0 and os.path.exists(arquivo_saida_abs) and os.path.getsize(arquivo_saida_abs) > 50000:
                 tamanho_kb = os.path.getsize(arquivo_saida_abs) // 1024
                 logging.info(f"🎬 Reel Editorial HyperFrames gerado ({duracao_total}s, {tamanho_kb} KB): {arquivo_saida_abs}")
-                return arquivo_saida_abs
+                return anexar_outro_gamestore(arquivo_saida_abs)
             err_tail = (res.stderr or res.stdout or "").strip()[-400:]
             logging.warning(f"HyperFrames editorial falhou ({res.returncode}: {err_tail}). Usando fallback Pillow+ffmpeg.")
         except Exception as exc:
@@ -1448,4 +1751,6 @@ def gerar_reel_editorial_rss(
         arquivo_saida=arquivo_saida_abs,
         duracao_segundos=int(math.ceil(duracao_total)),
         audio_path=voz_path,
+        usar_broll=False,
+        aplicar_outro=True,
     )

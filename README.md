@@ -90,10 +90,13 @@ flowchart TD
   2. **Story 9:16 (`1080×1920`, sem narração):** salvo em `media_output/story_editorial.jpg` com safe zones de Stories e publicado via `photo_stories` (`EDITORIAL_STORY_ENABLED=true`).
   3. **Reel 9:16 animado (`1080×1920`):** narrado pela **Thalita (`edge-tts`)** via **HyperFrames** (com fallback Pillow + `ffmpeg`) respeitando Safe Zone do Facebook Reels (`224px` topo, `164px` direita, `540px` base) (`EDITORIAL_REEL_ENABLED=true`).
 
-### 3. Fábrica de Mídia 9:16 & 4:5 (`media_generator.py` — Custo R\$ 0)
+### 3. Fábrica de Mídia 9:16 & 4:5 (`media_generator.py` + Google Flow — Custo R\$ 0)
+- **Fluxo Híbrido (Google Flow + HyperFrames/FFmpeg):**
+  - **Ativos base opcionais (`assets/`):** B-Rolls verticais `9:16` gerados no **Google Flow** em `assets/backgrounds/*.mp4` (recebem loop contínuo, crop `1080×1920 @ 30fps` e scrim escuro 60% atrás do card da oferta — `REEL_BROLL_ENABLED=true`) e vinheta Outro de 2s em `assets/outros/outro_gamestore.mp4` (`REEL_OUTRO_ENABLED=true`, normalizada para `1080×1920`, AAC `44100Hz` estéreo com injeção automática de `anullsrc` quando muda e CTA `SIGA @PROMOSGEEKTECH • LINK NA BIO` na Safe Zone). Veja os prompts prontos em [assets/PROMPTS_GOOGLE_FLOW.md](assets/PROMPTS_GOOGLE_FLOW.md).
+  - **Degradação segura:** se as pastas `assets/backgrounds/` e `assets/outros/` estiverem vazias, o pipeline segue 100% funcional usando apenas o fundo *Obsidian Tech* padrão.
 - **Motion Graphics com HeyGen HyperFrames:** vídeos determinísticos **1080×1920 @ 30fps** em HTML/GSAP para ofertas e pautas editoriais, com fallback automático em **Pillow + `ffmpeg`**.
 - **Locução Neural PT-BR (`edge-tts`):** voz **`pt-BR-ThalitaMultilingualNeural`** com duração ajustada dinamicamente via `ffprobe` (`duração + 0,8s`).
-- **Filtro de Nicho `Gamestore` (`_bonus_nicho_gamestore`):** prioriza Games, Hardware Gamer e Áudio nos Reels, Stories e Feed da `Gamestore`.
+- **Filtro de Nicho `Gamestore` (`_bonus_nicho_gamestore`):** prioriza Games, Hardware Gamer e Áudio nos Reels, Stories, Feed da `Gamestore` e Telegram.
 
 ### 4. Distribuição Atual por Canal
 
@@ -123,6 +126,10 @@ flowchart TD
 │   ├── test_radar_e_parser.py         # Testes do Radar 180d (mediana/warm-up) e parser Gemini
 │   └── test_rss_editorial.py          # Testes do motor RSS (noticia_id, retry, Card 4:5, Story 9:16, Reel)
 ├── .gitignore                         # Ignora *.db, *.db.gz, caches e media_output/
+├── assets/
+│   ├── backgrounds/                   # B-Rolls 9:16 (Google Flow) opcionais para fundo de Reels
+│   ├── outros/                        # Vinheta outro_gamestore.mp4 (2s) opcional para fechamento
+│   └── PROMPTS_GOOGLE_FLOW.md         # Guia e prompts prontos para gerar ativos no Google Flow
 ├── GEMINI.md                          # Regras técnicas e workflow do projeto
 ├── ESTRATEGIA_90_DIAS.md              # Plano estratégico 90d (FB + IG + TG e Amazon Brasil)
 ├── magalu_scrapper.py                 # Orquestrador principal (Scrapers, Radar 180d, Gemini e Canais)
@@ -152,6 +159,7 @@ Configure em `Settings` → `Secrets and variables` → `Actions`:
 | `DATA_REPO_OWNER_NAME` | Variable | Repo privado das Releases do SQLite (ex: `usuario/alpha-profit-data`) | Recomendado |
 | `FACEBOOK_MAX_POSTS` / `TELEGRAM_MAX_POSTS` | Env (Workflow) | Limites anti-fadiga por rodada (`3` no Feed FB, `10` no Telegram) | Configurado |
 | `IG_ENABLED` / `AMAZON_ENABLED` | Env (Workflow) | Flags de preparação para Mês 2 (`false` na Semana 1) | Configurado |
+| `REEL_BROLL_ENABLED` / `REEL_OUTRO_ENABLED` | Env (Workflow) | Ativa B-Rolls (`assets/backgrounds/`) e Outro 2s (`assets/outros/`) nos Reels (`true` por padrão) | Configurado |
 | `X_*` / `THREADS_ACCESS_TOKEN` | Secret | Mantidos opcionais/inativos (`X_ENABLED=false`, `THREADS_ENABLED=false`) | Não |
 
 ---

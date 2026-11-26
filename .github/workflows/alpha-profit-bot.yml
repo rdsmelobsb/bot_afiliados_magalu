@@ -103,6 +103,8 @@ jobs:
           EDITORIAL_TELEGRAM_ENABLED: 'true'
           EDITORIAL_STORY_ENABLED: 'true'
           EDITORIAL_REEL_ENABLED: 'true'
+          REEL_BROLL_ENABLED: 'true'
+          REEL_OUTRO_ENABLED: 'true'
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           EMAIL_USER: ${{ secrets.EMAIL_USER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
