@@ -1,15 +1,17 @@
-# .github/workflows/alpha_profit_bot.yml
+# .github/workflows/alpha-profit-bot.yml
 
 name: 'Alpha-Profit: Execução Automática (3x ao Dia)'
 
 on:
   workflow_dispatch:
- 
+  # Reativar após validação das 3 fases em produção (10h, 15h e 20h BRT):
+  # schedule:
+  #   - cron: '0 13,18,23 * * *'
 
 jobs:
   run-alpha-profit-bot:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: '1. Checkout do Repositório'
         uses: actions/checkout@v4
@@ -34,7 +36,23 @@ jobs:
           ffmpeg -version | head -n 1
           hyperframes --version || true
 
-      - name: '3.5. Restaurar Históricos (Anti-Repetição 72h + Radar Preços 30d + Métricas)'
+      - name: '3.4. Restaurar Banco SQLite (alpha_profit.db.gz) via GitHub Releases'
+        env:
+          GH_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO_OWNER_NAME }}
+        run: |
+          if [ -n "${DATA_REPO}" ] && [ -n "${GH_TOKEN}" ]; then
+            if gh release download db-latest --repo "${DATA_REPO}" --pattern "alpha_profit.db.gz" --clobber; then
+              gunzip -f alpha_profit.db.gz
+              ls -lh alpha_profit.db
+            else
+              echo "ℹ️ Release db-latest ainda não encontrada em ${DATA_REPO} (1ª execução). Banco será criado do zero."
+            fi
+          else
+            echo "⚠️ DATA_REPO_OWNER_NAME ou DATA_REPO_TOKEN não configurados. Pulando restauração via Releases."
+          fi
+
+      - name: '3.5. Restaurar Históricos (Anti-Repetição 72h + Radar Preços + Métricas)'
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -45,6 +63,13 @@ jobs:
           restore-keys: |
             historico-bot-
             historico-postados-
+
+      - name: '3.6. Inicializar SQLite, Migrar JSONs Legados e Capturar Baseline'
+        run: |
+          python storage_db.py --init --migrate
+          BASELINE=$(python storage_db.py --baseline)
+          echo "DB_BASELINE=${BASELINE}" >> "$GITHUB_ENV"
+          echo "📊 Baseline SQLite (historico_precos): ${BASELINE} linhas"
 
       - name: '4. Executar o Script (magalu_scrapper.py)'
         run: python magalu_scrapper.py
@@ -70,6 +95,48 @@ jobs:
             historico_precos.json
             historico_metricas.json
           key: historico-bot-${{ github.run_id }}
+
+      - name: '4.6. Sincronizar, Limpar (180d), Validar Integridade e Subir SQLite (Releases)'
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.DATA_REPO_TOKEN }}
+          DATA_REPO: ${{ vars.DATA_REPO_OWNER_NAME }}
+        run: |
+          python storage_db.py --init --migrate
+          python storage_db.py --cleanup --dias 180
+          python storage_db.py --validate --baseline-count "${DB_BASELINE:-0}"
+          gzip -c -9 alpha_profit.db > alpha_profit.db.gz
+          ls -lh alpha_profit.db alpha_profit.db.gz
+
+          if [ -n "${DATA_REPO}" ] && [ -n "${GH_TOKEN}" ]; then
+            if ! gh release view db-latest --repo "${DATA_REPO}" >/dev/null 2>&1; then
+              gh release create db-latest --repo "${DATA_REPO}" --title "Alpha-Profit SQLite (Latest)" --notes "Estado mais recente do banco SQLite alpha_profit.db.gz."
+            fi
+            gh release upload db-latest alpha_profit.db.gz --repo "${DATA_REPO}" --clobber
+            echo "✅ Banco alpha_profit.db.gz publicado na release db-latest."
+
+            DIA_SEMANA=$(TZ=America/Sao_Paulo date +%u)
+            if [ "${DIA_SEMANA}" = "7" ]; then
+              WEEK_TAG="backup-$(TZ=America/Sao_Paulo date +%G-W%V)"
+              if ! gh release view "${WEEK_TAG}" --repo "${DATA_REPO}" >/dev/null 2>&1; then
+                gh release create "${WEEK_TAG}" alpha_profit.db.gz --repo "${DATA_REPO}" --title "Backup Semanal ${WEEK_TAG}" --notes "Snapshot semanal automático do banco SQLite (domingo BRT)."
+                echo "✅ Snapshot semanal idempotente criado: ${WEEK_TAG}"
+              else
+                echo "ℹ️ Snapshot semanal ${WEEK_TAG} já existe. Pulando criação duplicada."
+              fi
+            fi
+          else
+            echo "⚠️ DATA_REPO_OWNER_NAME ou DATA_REPO_TOKEN não configurados. Upload para Releases ignorado."
+          fi
+
+      - name: '4.7. Salvar Artefato de Backup SQLite (30 dias)'
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpha-profit-db-backup
+          path: alpha_profit.db.gz
+          retention-days: 30
+          if-no-files-found: warn
 
       - name: '5. Salvar Artefatos (Dashboard HTML + Reels/Stories + Resultados)'
         if: always()

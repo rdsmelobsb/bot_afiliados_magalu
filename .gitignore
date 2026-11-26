@@ -8,3 +8,7 @@ historico_postados.json
 historico_precos.json
 historico_metricas.json
 media_output/
+*.db
+*.db.gz
+*.db-wal
+*.db-shm
