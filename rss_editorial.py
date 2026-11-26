@@ -1182,6 +1182,42 @@ def publicar_reel_editorial_facebook(mp4_path, texto_facebook, url_oferta_coment
     return False
 
 
+def publicar_story_editorial_facebook(story_path):
+    """Publica o Story Editorial estático 9:16 (sem narração) na Página Gamestore via photo_stories."""
+    if not story_path or not os.path.exists(story_path):
+        return False
+    page_id, page_token = _resolver_facebook_page_auth()
+    if not page_id or not page_token:
+        return False
+
+    try:
+        with open(story_path, "rb") as f_st:
+            st_bytes = f_st.read()
+        r_ph = requests.post(
+            f"https://graph.facebook.com/v21.0/{page_id}/photos",
+            data={"published": "false", "access_token": page_token},
+            files={"source": ("story_editorial.jpg", st_bytes, "image/jpeg")},
+            timeout=20,
+        )
+        if r_ph.status_code != 200 or not r_ph.json().get("id"):
+            logging.warning(f"Facebook Story editorial upload foto falhou ({r_ph.status_code}): {r_ph.text}")
+            return False
+        photo_id = r_ph.json()["id"]
+
+        r_st = requests.post(
+            f"https://graph.facebook.com/v21.0/{page_id}/photo_stories",
+            data={"photo_id": photo_id, "access_token": page_token},
+            timeout=15,
+        )
+        if r_st.status_code == 200:
+            logging.info("📱 Story editorial 9:16 publicado no Facebook Gamestore!")
+            return True
+        logging.warning(f"Facebook Story editorial falhou ({r_st.status_code}): {r_st.text}")
+    except Exception as exc:
+        logging.warning(f"Exceção ao publicar Story editorial no Facebook: {exc}")
+    return False
+
+
 def publicar_editorial_telegram(texto_telegram, card_path=None, url_oferta=None):
     """Publica o Card 4:5 editorial no canal do Telegram (@promosgeektech) via sendPhoto."""
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -1337,6 +1373,7 @@ def executar_bloco_editorial(
         pubs = publicadores or {}
         fn_fb = pubs.get("facebook", publicar_editorial_facebook)
         fn_tg = pubs.get("telegram", publicar_editorial_telegram)
+        fn_fb_story = pubs.get("facebook_story", publicar_story_editorial_facebook)
         fn_fb_reel = pubs.get("facebook_reel", publicar_reel_editorial_facebook)
 
         canais_ok = []
@@ -1364,6 +1401,27 @@ def executar_bloco_editorial(
             fn_th = pubs.get("threads", publicar_editorial_threads)
             if fn_th(pauta["texto_threads"]):
                 canais_ok.append("threads")
+
+        # 2.5 Story 9:16 sem narração (estático 1080x1920) isolado — nunca bloqueia Feed, Telegram ou Reel
+        story_path = None
+        if _env_bool("EDITORIAL_STORY_ENABLED", default=True):
+            try:
+                fn_gen_story = pubs.get("gerar_story")
+                if fn_gen_story is not None:
+                    story_path = fn_gen_story(pauta, img_bytes)
+                else:
+                    import media_generator
+                    story_path = media_generator.gerar_story_editorial_rss(
+                        headline_card=pauta["headline_card"],
+                        destaque_card=pauta["destaque_card"],
+                        tag_categoria=pauta["tag_categoria"],
+                        fonte=pauta["fonte"],
+                        img_bytes=img_bytes,
+                    )
+                if story_path and fn_fb_story(story_path):
+                    canais_ok.append("facebook_story")
+            except Exception as story_err:
+                logging.warning(f"Falha isolada no Story editorial RSS (Feed/Telegram/Reel preservados): {story_err}")
 
         # 3. Reel 9:16 (HyperFrames + Thalita) completamente isolado — nunca bloqueia o Card 4:5
         reel_path = None
@@ -1413,6 +1471,7 @@ def executar_bloco_editorial(
             "headline_card": pauta["headline_card"],
             "tem_match_oferta": pauta["tem_match_oferta"],
             "card_path": card_path,
+            "story_path": story_path,
             "reel_path": reel_path,
             "canais": canais_ok,
         }

@@ -96,6 +96,7 @@ jobs:
           THREADS_ENABLED: 'false'
           EDITORIAL_ENABLED: 'true'
           EDITORIAL_TELEGRAM_ENABLED: 'true'
+          EDITORIAL_STORY_ENABLED: 'true'
           EDITORIAL_REEL_ENABLED: 'true'
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           EMAIL_USER: ${{ secrets.EMAIL_USER }}

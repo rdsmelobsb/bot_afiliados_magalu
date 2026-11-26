@@ -585,6 +585,219 @@ class TestRSSEditorial(unittest.TestCase):
         self.assertIn("noticia_nao_encontrada", cm_id.output[0])
         self.assertIn("noticia_id=99", cm_id.output[0])
 
+    def test_story_editorial_9x16_sem_narracao_e_safe_zone_reel(self):
+        with patch.object(media_generator, "OUTPUT_DIR", self.tmp_dir.name):
+            with patch.object(
+                media_generator,
+                "gerar_locucao_texto_ptbr",
+                side_effect=AssertionError("Story estático nunca deve gerar narração"),
+            ):
+                story_com_foto = media_generator.gerar_story_editorial_rss(
+                    headline_card="RTX 5070 ganha corte oficial de preco no varejo",
+                    destaque_card="RTX 5070",
+                    tag_categoria="HARDWARE",
+                    fonte="Adrenaline",
+                    img_bytes=self._criar_jpeg_memoria(),
+                )
+                story_sem_foto = os.path.join(self.tmp_dir.name, "story_dark.jpg")
+                media_generator.gerar_story_editorial_rss(
+                    headline_card="Nintendo detalha bateria revisada para portatil",
+                    destaque_card="Nintendo",
+                    tag_categoria="GAMES",
+                    fonte="Voxel",
+                    img_bytes=None,
+                    arquivo_saida=story_sem_foto,
+                )
+
+            self.assertEqual(os.path.basename(story_com_foto), "story_editorial.jpg")
+            with Image.open(story_com_foto) as im_st1, Image.open(story_sem_foto) as im_st2:
+                self.assertEqual(im_st1.size, (1080, 1920))
+                self.assertEqual(im_st2.size, (1080, 1920))
+
+            # Fallback Pillow 9:16 do Reel também deve gerar 1080x1920 respeitando modo="reel"
+            reel_fallback = os.path.join(self.tmp_dir.name, "reel_fb.jpg")
+            media_generator.gerar_card_editorial_rss(
+                headline_card="AMD anuncia driver focado em jogos competitivos",
+                destaque_card="AMD",
+                tag_categoria="HARDWARE",
+                fonte="Adrenaline",
+                img_bytes=self._criar_jpeg_memoria(),
+                arquivo_saida=reel_fallback,
+                tamanho=(1080, 1920),
+                modo="reel",
+            )
+            with Image.open(reel_fallback) as im_reel:
+                self.assertEqual(im_reel.size, (1080, 1920))
+
+            # Verifica CSS Safe Zone do Reel no HTML gerado para o HyperFrames
+            mp4_out = os.path.join(self.tmp_dir.name, "reel_safezone.mp4")
+
+            def fake_run(cmd, cwd=None, capture_output=True, text=True, timeout=240):
+                with open(mp4_out, "wb") as f_mp4:
+                    f_mp4.write(b"0" * 60000)
+
+                class Res:
+                    returncode = 0
+                    stdout = "ok"
+                    stderr = ""
+
+                return Res()
+
+            with patch.object(media_generator.shutil, "which", side_effect=lambda b: "hyperframes" if "hyperframes" in b else None):
+                with patch.object(media_generator.subprocess, "run", side_effect=fake_run):
+                    res_mp4 = media_generator.gerar_reel_editorial_rss(
+                        headline_card="Monitor 240Hz entra em queda historica no Brasil",
+                        destaque_card="240Hz",
+                        tag_categoria="HARDWARE",
+                        fonte="Tecnoblog",
+                        roteiro_reel="Monitor gamer de alta taxa de atualização ficou mais acessível nesta semana.",
+                        img_bytes=self._criar_jpeg_memoria(),
+                        arquivo_saida=mp4_out,
+                    )
+
+            self.assertEqual(res_mp4, mp4_out)
+            html_path = os.path.join(self.tmp_dir.name, "hf_editorial_job", "index.html")
+            self.assertTrue(os.path.exists(html_path))
+            with open(html_path, "r", encoding="utf-8") as f_html:
+                html_txt = f_html.read()
+            self.assertIn("padding: 224px 164px 540px 72px;", html_txt)
+
+    def test_publicar_story_editorial_facebook_photo_stories(self):
+        story_file = os.path.join(self.tmp_dir.name, "story_editorial.jpg")
+        with open(story_file, "wb") as f_st:
+            f_st.write(self._criar_jpeg_memoria(size=(1080, 1920)))
+
+        chamadas = []
+
+        class FakeResp:
+            def __init__(self, status_code, payload):
+                self.status_code = status_code
+                self._payload = payload
+                self.text = json.dumps(payload)
+
+            def json(self):
+                return self._payload
+
+        def fake_post(url, data=None, files=None, timeout=15):
+            chamadas.append((url, data))
+            if url.endswith("/photos"):
+                return FakeResp(200, {"id": "photo_123"})
+            if url.endswith("/photo_stories"):
+                return FakeResp(200, {"success": True, "post_id": "story_456"})
+            return FakeResp(400, {"error": "unexpected"})
+
+        with patch.object(rss_editorial, "_resolver_facebook_page_auth", return_value=("page_99", "tok_page")):
+            with patch.object(rss_editorial.requests, "post", side_effect=fake_post):
+                ok = rss_editorial.publicar_story_editorial_facebook(story_file)
+
+        self.assertTrue(ok)
+        self.assertEqual(len(chamadas), 2)
+        self.assertEqual(chamadas[0][0], "https://graph.facebook.com/v21.0/page_99/photos")
+        self.assertEqual(chamadas[0][1]["published"], "false")
+        self.assertEqual(chamadas[1][0], "https://graph.facebook.com/v21.0/page_99/photo_stories")
+        self.assertEqual(chamadas[1][1]["photo_id"], "photo_123")
+
+    def test_editorial_card_feed_story_sem_narracao_e_isolamento_falhas(self):
+        agora_utc = datetime(2026, 11, 25, 18, 0, 0, tzinfo=timezone.utc)
+        xml_ok = f"""<?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0"><channel><item>
+          <title>PlayStation Portal ganha streaming em nuvem para assinantes</title>
+          <link>https://www.adrenaline.com.br/games/ps-portal-nuvem-update</link>
+          <description>Recurso dispensa console ligado em jogos compativeis.</description>
+          <pubDate>{(agora_utc - timedelta(hours=1)).strftime('%a, %d %b %Y %H:%M:%S +0000')}</pubDate>
+        </item></channel></rss>"""
+
+        def fake_ia(cands, ofertas):
+            return json.dumps({
+                "noticia_id": cands[0]["id"],
+                "tag_categoria": "GAMES",
+                "headline_card": "PS Portal libera streaming em nuvem direto",
+                "destaque_card": "PS Portal",
+                "roteiro_reel": "A Sony liberou streaming direto na nuvem pro PlayStation Portal sem precisar deixar o PS5 ligado.",
+                "texto_facebook": "O PlayStation Portal agora roda jogos compatíveis direto da nuvem.\n\nIsso muda completamente o uso fora de casa sem depender do PS5 ligado.\n\nVocê compraria o portátil só pelo streaming ou ainda prefere PC de mão?",
+            })
+
+        chamadas = {"fb": 0, "tg": 0, "st": 0, "reel": 0}
+        pubs = {
+            "facebook": lambda txt, card_path=None, url_oferta_comentario=None: (
+                chamadas.__setitem__("fb", chamadas["fb"] + 1) or bool(card_path and os.path.exists(card_path))
+            ),
+            "telegram": lambda txt, card_path=None, url_oferta=None: (
+                chamadas.__setitem__("tg", chamadas["tg"] + 1) or bool(card_path and os.path.exists(card_path))
+            ),
+            "facebook_story": lambda st_path: (
+                chamadas.__setitem__("st", chamadas["st"] + 1) or bool(st_path and os.path.exists(st_path))
+            ),
+            "gerar_reel": lambda pauta, img: os.path.join(self.tmp_dir.name, "dummy_reel.mp4"),
+            "facebook_reel": lambda *a, **kw: chamadas.__setitem__("reel", chamadas["reel"] + 1) or True,
+        }
+
+        with patch.dict(
+            os.environ,
+            {
+                "EDITORIAL_ENABLED": "true",
+                "EDITORIAL_TELEGRAM_ENABLED": "true",
+                "EDITORIAL_STORY_ENABLED": "true",
+                "EDITORIAL_REEL_ENABLED": "true",
+            },
+            clear=False,
+        ):
+            with patch.object(media_generator, "OUTPUT_DIR", self.tmp_dir.name):
+                res = rss_editorial.executar_bloco_editorial(
+                    conn=self.conn,
+                    ofertas_selecionadas=[],
+                    forcar_execucao=False,
+                    agora=agora_utc,
+                    fetcher=lambda u, timeout=10: xml_ok.encode("utf-8"),
+                    gerador_ia=fake_ia,
+                    publicadores=pubs,
+                )
+
+        self.assertTrue(res["executado"])
+        self.assertEqual(res["canais"], ["facebook", "telegram", "facebook_story", "facebook_reel"])
+        self.assertEqual(chamadas, {"fb": 1, "tg": 1, "st": 1, "reel": 1})
+        with Image.open(res["card_path"]) as im_c, Image.open(res["story_path"]) as im_s:
+            self.assertEqual(im_c.size, (1080, 1350))
+            self.assertEqual(im_s.size, (1080, 1920))
+
+        # Falha isolada no Story não pode impedir Feed, Telegram ou Reel (forcar_execucao=True em novo teste)
+        chamadas_isol = {"fb": 0, "tg": 0, "reel": 0}
+        pubs_isol = {
+            "facebook": lambda txt, card_path=None, url_oferta_comentario=None: chamadas_isol.__setitem__("fb", chamadas_isol["fb"] + 1) or True,
+            "telegram": lambda txt, card_path=None, url_oferta=None: chamadas_isol.__setitem__("tg", chamadas_isol["tg"] + 1) or True,
+            "gerar_story": lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("falha simulada no Story")),
+            "gerar_reel": lambda pauta, img: os.path.join(self.tmp_dir.name, "dummy_reel.mp4"),
+            "facebook_reel": lambda *a, **kw: chamadas_isol.__setitem__("reel", chamadas_isol["reel"] + 1) or True,
+        }
+        xml_ok_2 = xml_ok.replace("ps-portal-nuvem-update", "ps-portal-nuvem-v2").replace(
+            "PlayStation Portal ganha streaming em nuvem para assinantes",
+            "Steam Deck recebe suporte oficial a novo recurso de streaming local",
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "EDITORIAL_ENABLED": "true",
+                "EDITORIAL_TELEGRAM_ENABLED": "true",
+                "EDITORIAL_STORY_ENABLED": "true",
+                "EDITORIAL_REEL_ENABLED": "true",
+            },
+            clear=False,
+        ):
+            with patch.object(media_generator, "OUTPUT_DIR", self.tmp_dir.name):
+                res_isol = rss_editorial.executar_bloco_editorial(
+                    conn=self.conn,
+                    ofertas_selecionadas=[],
+                    forcar_execucao=True,
+                    agora=agora_utc,
+                    fetcher=lambda u, timeout=10: xml_ok_2.encode("utf-8"),
+                    gerador_ia=fake_ia,
+                    publicadores=pubs_isol,
+                )
+
+        self.assertTrue(res_isol["executado"])
+        self.assertEqual(chamadas_isol, {"fb": 1, "tg": 1, "reel": 1})
+        self.assertEqual(res_isol["canais"], ["facebook", "telegram", "facebook_reel"])
+
 
 if __name__ == "__main__":
     unittest.main()
