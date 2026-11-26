@@ -10,6 +10,11 @@ on:
         required: false
         type: boolean
         default: false
+      editorial_only:
+        description: 'Executar apenas o bloco editorial RSS (pula scrapers de loja)'
+        required: false
+        type: boolean
+        default: false
   # Reativar após validação das 3 fases em produção (10h, 15h e 20h BRT):
   # schedule:
   #   - cron: '0 13,18,23 * * *'
@@ -79,7 +84,9 @@ jobs:
 
       - name: '4. Executar o Script (magalu_scrapper.py)'
         run: |
-          if [ "${{ inputs.run_editorial }}" = "true" ]; then
+          if [ "${{ inputs.editorial_only }}" = "true" ]; then
+            python magalu_scrapper.py --editorial-only
+          elif [ "${{ inputs.run_editorial }}" = "true" ]; then
             python magalu_scrapper.py --run-editorial
           else
             python magalu_scrapper.py

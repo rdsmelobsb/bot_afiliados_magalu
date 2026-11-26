@@ -720,6 +720,7 @@ def publicar_editorial_telegram(texto_telegram, url_oferta=None):
 def executar_bloco_editorial(
     conn,
     oportunidades_dict=None,
+    ofertas_selecionadas=None,
     forcar_execucao=False,
     agora=None,
     fetcher=None,
@@ -750,8 +751,12 @@ def executar_bloco_editorial(
             logging.info("📰 Nenhuma pauta RSS inédita nos últimos 7 dias.")
             return {"executado": False, "motivo": "sem_pautas_ineditas_7d", "canais": []}
 
-        ofertas_lista = (oportunidades_dict or {}).get("oportunidades", [])
-        ofertas_resumo = _resumir_ofertas_para_editorial(oportunidades_dict, limite=10)
+        ofertas_lista = (
+            list(ofertas_selecionadas)
+            if ofertas_selecionadas is not None
+            else list((oportunidades_dict or {}).get("oportunidades", []))
+        )
+        ofertas_resumo = _resumir_ofertas_para_editorial({"oportunidades": ofertas_lista}, limite=10)
 
         raw_ia = (
             gerador_ia(ineditas, ofertas_resumo)

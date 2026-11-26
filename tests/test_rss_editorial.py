@@ -269,6 +269,80 @@ class TestRSSEditorial(unittest.TestCase):
         )
         self.assertEqual(res_dup["motivo"], "ja_publicado_hoje")
 
+    def test_execucao_editorial_pura_com_zero_ofertas_falha_scraping(self):
+        agora_utc = datetime(2026, 11, 25, 22, 30, 0, tzinfo=timezone.utc)  # Fora das 15h BRT, usa forcar_execucao=True
+        xml_ok = f"""<?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0"><channel><item>
+          <title>AMD anuncia corte de preço em processadores Ryzen AM5</title>
+          <link>https://tecnoblog.net/noticias/amd-corte-ryzen-am5</link>
+          <description>Redução busca aquecer upgrades de setup nesta temporada.</description>
+          <pubDate>{(agora_utc - timedelta(hours=1)).strftime('%a, %d %b %Y %H:%M:%S +0000')}</pubDate>
+        </item></channel></rss>"""
+
+        fb_captura = {}
+
+        def fake_ia(cands, ofertas):
+            self.assertEqual(ofertas, [])
+            return json.dumps({
+                "url_escolhida": cands[0]["url"],
+                "fonte": "Tecnoblog",
+                "titulo_original": cands[0]["titulo"],
+                "tem_match_oferta": True,
+                "sku_oferta_relacionada": "ML_RYZEN_FAKE",
+                "texto_x": "Processadores AM5 ficando mais acessíveis! Vai fazer upgrade?",
+                "texto_threads": "Corte nos Ryzen AM5 muda a conta do upgrade. Via Tecnoblog. Vale esperar?",
+                "texto_facebook": "AM5 ficando competitivo frente ao AM4! Via Tecnoblog. Qual plataforma você escolheria hoje?",
+                "texto_telegram": "Ryzen AM5 Via Tecnoblog",
+            })
+
+        def fake_fb(txt, url_oferta_comentario=None):
+            fb_captura["txt"] = txt
+            fb_captura["url_comentario"] = url_oferta_comentario
+            return True
+
+        res = rss_editorial.executar_bloco_editorial(
+            conn=self.conn,
+            ofertas_selecionadas=[],
+            forcar_execucao=True,
+            agora=agora_utc,
+            fetcher=lambda u, timeout=10: xml_ok.encode("utf-8"),
+            gerador_ia=fake_ia,
+            publicadores={
+                "x": lambda txt: True,
+                "threads": lambda txt: True,
+                "facebook": fake_fb,
+            },
+        )
+        self.assertTrue(res["executado"])
+        self.assertFalse(res["tem_match_oferta"])
+        self.assertIsNone(fb_captura["url_comentario"])
+        self.assertEqual(res["canais"], ["x", "threads", "facebook"])
+
+    def test_diagnostico_bloqueio_waf_http(self):
+        import magalu_scrapper
+
+        with self.assertLogs(level="ERROR") as cm:
+            diag_waf = magalu_scrapper._diagnosticar_bloqueio_http(
+                "Mercado Livre",
+                "https://lista.mercadolivre.com.br/games",
+                403,
+                "<html><title>Access Denied</title><body>Please solve captcha</body></html>",
+                motivo_extra="http_nao_200",
+            )
+        self.assertTrue(diag_waf["suspeita_waf"])
+        self.assertEqual(diag_waf["status_code"], 403)
+        self.assertIn("status_code=403", cm.output[0])
+
+        with self.assertLogs(level="WARNING"):
+            diag_ok = magalu_scrapper._diagnosticar_bloqueio_http(
+                "Magalu",
+                "https://www.magazinevoce.com.br/magazinedealz/games/l/ga/?page=5",
+                200,
+                "<html><title>Magalu Games</title><body>Sem mais itens</body></html>",
+                motivo_extra="sem_next_data",
+            )
+        self.assertFalse(diag_ok["suspeita_waf"])
+
 
 if __name__ == "__main__":
     unittest.main()

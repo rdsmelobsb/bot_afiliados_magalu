@@ -281,6 +281,58 @@ def calcular_comissao_magalu(categoria_nome, nome_produto, seller_id):
     return round(float(taxa), 2)
 
 
+_INDICADORES_WAF = (
+    "captcha",
+    "recaptcha",
+    "hcaptcha",
+    "cloudflare",
+    "cf-chl",
+    "access denied",
+    "request blocked",
+    "bot detection",
+    "verify you are human",
+    "verificação de segurança",
+    "account-verification",
+    "suspicious traffic",
+    "akamai",
+    "incapsula",
+    "datadome",
+)
+
+
+def _diagnosticar_bloqueio_http(loja, url, status_code, html_content="", motivo_extra=""):
+    """Registra diagnóstico explícito de status_code e indícios de bloqueio WAF/Captcha."""
+    html_str = str(html_content or "")
+    html_lower = html_str.lower()
+    indicio = next((termo for termo in _INDICADORES_WAF if termo in html_lower), None)
+    suspeita_waf = bool(indicio or status_code in (403, 406, 429, 503))
+
+    title = ""
+    m_title = re.search(r"<title[^>]*>(.*?)</title>", html_str, re.IGNORECASE | re.DOTALL)
+    if m_title:
+        title = re.sub(r"\s+", " ", m_title.group(1)).strip()[:80]
+
+    diag = {
+        "loja": loja,
+        "status_code": status_code,
+        "suspeita_waf": suspeita_waf,
+        "indicio": indicio,
+        "title": title,
+        "bytes": len(html_str),
+        "motivo_extra": motivo_extra,
+    }
+    msg = (
+        f"🚧 [{loja}] status_code={status_code} | motivo={motivo_extra or 'n/a'} | "
+        f"suspeita_waf={suspeita_waf} | indicio={indicio} | bytes={diag['bytes']} | "
+        f"title='{title}' | url={url}"
+    )
+    if status_code in (403, 429, 503) or indicio:
+        logging.error(msg)
+    else:
+        logging.warning(msg)
+    return diag
+
+
 def extrair_dados_magalu_live(url):
     """
     Entra na URL fornecida, raspa os produtos da página, 
@@ -296,16 +348,21 @@ def extrair_dados_magalu_live(url):
 
     try:
         response = requests.get(url, headers=headers, timeout=15)
-        response.raise_for_status()
+        if response.status_code != 200:
+            _diagnosticar_bloqueio_http("Magalu", url, response.status_code, response.text, motivo_extra="http_nao_200")
+            return None, 1
         html_content = response.text
     except requests.exceptions.RequestException as e:
-        logging.warning(f"Erro ao buscar a URL {url}: {e}")
+        resp_err = getattr(e, "response", None)
+        sc = getattr(resp_err, "status_code", None)
+        logging.warning(f"Erro ao buscar URL Magalu ({url}) [status_code={sc}]: {e}")
         return None, 1
 
     soup = BeautifulSoup(html_content, "html.parser")
     next_data_script = soup.find("script", {"id": "__NEXT_DATA__"})
 
     if not next_data_script:
+        _diagnosticar_bloqueio_http("Magalu", url, response.status_code, html_content, motivo_extra="sem_next_data")
         return None, 1
 
     try:
@@ -474,11 +531,15 @@ def extrair_dados_mercadolivre_live(url, categoria_padrao="Geral"):
 
     try:
         response = requests.get(url, headers=headers, timeout=15)
-        response.raise_for_status()
+        if response.status_code != 200:
+            _diagnosticar_bloqueio_http("Mercado Livre", url, response.status_code, response.text, motivo_extra="http_nao_200")
+            return pd.DataFrame() if PANDAS_DISPONIVEL else []
         html = response.text
     except Exception as e:
-        logging.warning(f"Erro ao buscar URL do Mercado Livre ({url}): {e}")
-        return pd.DataFrame()
+        resp_err = getattr(e, "response", None)
+        sc = getattr(resp_err, "status_code", None)
+        logging.warning(f"Erro ao buscar URL do Mercado Livre ({url}) [status_code={sc}]: {e}")
+        return pd.DataFrame() if PANDAS_DISPONIVEL else []
 
     soup = BeautifulSoup(html, "html.parser")
     processed = []
@@ -490,6 +551,8 @@ def extrair_dados_mercadolivre_live(url, categoria_padrao="Geral"):
     search_cards = soup.find_all("li", class_=re.compile(r"ui-search-layout__item", re.I)) if not poly_cards else []
 
     all_cards = poly_cards or search_cards
+    if not all_cards:
+        _diagnosticar_bloqueio_http("Mercado Livre", url, response.status_code, html, motivo_extra="0_cards_na_pagina")
 
     for i, card in enumerate(all_cards):
         try:
@@ -2493,6 +2556,28 @@ def enriquecer_oportunidades_com_radar(oportunidades_dict, df_produtos):
     return oportunidades_dict
 
 
+def _executar_editorial_isolado(
+    conn_db,
+    oportunidades_dict=None,
+    ofertas_selecionadas=None,
+    forcar_execucao=False,
+):
+    """Dispara o motor editorial RSS de forma isolada, mesmo se o scraping retornar 0 ofertas."""
+    try:
+        import rss_editorial
+        res_editorial = rss_editorial.executar_bloco_editorial(
+            conn=conn_db,
+            oportunidades_dict=oportunidades_dict,
+            ofertas_selecionadas=ofertas_selecionadas,
+            forcar_execucao=forcar_execucao,
+        )
+        logging.info(f"📰 Bloco Editorial RSS finalizado: {res_editorial}")
+        return res_editorial
+    except Exception as ed_err:
+        logging.warning(f"Falha isolada no bloco editorial RSS (ofertas preservadas): {ed_err}")
+        return {"executado": False, "motivo": str(ed_err), "canais": []}
+
+
 # --- 4. O Maestro da Orquestra (Bloco Principal Modificado) ---
 
 if __name__ == "__main__":
@@ -2500,6 +2585,7 @@ if __name__ == "__main__":
 
     cli_parser = argparse.ArgumentParser(add_help=False)
     cli_parser.add_argument("--run-editorial", action="store_true", help="Força execução do bloco editorial RSS")
+    cli_parser.add_argument("--editorial-only", action="store_true", help="Executa apenas o bloco editorial RSS sem raspar lojas")
     args_cli, _ = cli_parser.parse_known_args()
 
     configurar_gemini(obrigatorio=True)
@@ -2512,6 +2598,15 @@ if __name__ == "__main__":
             and (os.path.exists("historico_precos.json") or os.path.exists("historico_postados.json"))
         ):
             storage_db.migrar_jsons_legados(conn_db)
+
+        if args_cli.editorial_only:
+            logging.info("📰 Modo --editorial-only ativo: pulando scrapers de loja.")
+            _executar_editorial_isolado(
+                conn_db,
+                ofertas_selecionadas=[],
+                forcar_execucao=True,
+            )
+            sys.exit(0)
 
         # Carrega histórico das últimas 72h (anti-repetição) direto do SQLite
         historico_postados = carregar_historico_postados(horas_validade=72, conn=conn_db)
@@ -2572,8 +2667,11 @@ if __name__ == "__main__":
 
                 df_pagina, _ = extrair_dados_magalu_live(url_paginada)
 
-                if df_pagina is None or df_pagina.empty:
-                    logging.info(f"Magalu: Fim dos produtos após a página {pagina-1}.")
+                if df_pagina is None:
+                    logging.warning(f"Magalu: falha ou bloqueio WAF ao coletar página {pagina}; interrompendo vitrine.")
+                    break
+                if df_pagina.empty:
+                    logging.info(f"Magalu: fim dos produtos na página {pagina}.")
                     break
 
                 all_dfs.append(df_pagina)
@@ -2609,7 +2707,12 @@ if __name__ == "__main__":
                 logging.warning(f"Erro ao buscar categoria {cat_nome} do ML: {e}")
 
         if not all_dfs:
-            logging.error("Nenhum produto extraído de nenhuma das plataformas. Verifique as conexões.")
+            logging.error("Nenhum produto extraído de nenhuma das plataformas (possível bloqueio temporário de IP/WAF).")
+            _executar_editorial_isolado(
+                conn_db,
+                ofertas_selecionadas=[],
+                forcar_execucao=args_cli.run_editorial,
+            )
             sys.exit(0)
 
         # Junta todas as tabelas e remove duplicatas por SKU
@@ -2727,16 +2830,11 @@ if __name__ == "__main__":
             )
 
         # 📰 BLOCO EDITORIAL RSS (100% isolado — falha aqui nunca impacta ofertas nem SQLite)
-        try:
-            import rss_editorial
-            res_editorial = rss_editorial.executar_bloco_editorial(
-                conn=conn_db,
-                oportunidades_dict=oportunidades_dict,
-                forcar_execucao=args_cli.run_editorial,
-            )
-            logging.info(f"📰 Bloco Editorial RSS finalizado: {res_editorial}")
-        except Exception as ed_err:
-            logging.warning(f"Falha isolada no bloco editorial RSS (ofertas preservadas): {ed_err}")
+        _executar_editorial_isolado(
+            conn_db,
+            oportunidades_dict=oportunidades_dict,
+            forcar_execucao=args_cli.run_editorial,
+        )
 
         # 📊 TELEMETRIA & DASHBOARD HTML DE ACOMPANHAMENTO (Automático + Painel de Vendas Reais)
         try:
