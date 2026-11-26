@@ -114,7 +114,9 @@ Eu fornecerei um [INPUT_DATA], que é uma string JSON representando um DataFrame
 * `seller_id`: Identificador do vendedor ('magazineluiza' para 1P direto, nome da loja parceira para 3P, ou 'Mercado Livre Full').
 * `comissao_percent`: O percentual de comissão do afiliado (ex: 5.0 para 5%).
 * `lucro_estimado_reais`: O valor líquido estimado em R$ de comissão por venda (preco_atual * comissao_percent / 100).
-* `url_afiliado`: O link de compra.
+* `menor_preco_historico`: Booleano (`true` ou `false`) indicando se o preço atual bateu a mínima real de 180 dias após warm-up mínimo de 5 dias.
+* `queda_real_percent`: Queda percentual real em relação à mediana de 180 dias.
+* `preco_medio_historico`: Preço mediano de referência nos últimos 180 dias (em R$).
 
 **4. PROCESSO DE DECISÃO ESTRATÉGICA (THOUGHT_PROCESS):**
 Seu objetivo é identificar EXATAMENTE 20 (VINTE) "Oportunidades de Ouro", cumprindo OBRIGATORIAMENTE esta distribuição de lojas:
@@ -128,7 +130,7 @@ Dentro de cada loja, priorize com base nesta hierarquia de decisão:
 * **Filtro 4: Relevância (Qualificador)**: O produto deve ter apelo imediato para o nicho (Games, Geek, Tech, Celulares, Smart House).
 
 **5. DIRETRIZ DE SAÍDA (OUTPUT):**
-Sua resposta deve ser um JSON ESTRITO. O JSON deve conter uma chave principal "oportunidades" que é um array de EXATAMENTE 20 objetos (15 do Mercado Livre e 5 da Magalu). Intercale as ofertas para manter uma experiência dinâmica no canal!
+Sua resposta deve ser um JSON ESTRITO e COMPACTO. O JSON deve conter uma chave principal "oportunidades" que é um array de EXATAMENTE 20 objetos (15 do Mercado Livre e 5 da Magalu), intercalando as lojas. Não inclua `url_afiliado` nem `imagem_url` no JSON (nosso backend injeta os links de rastreio pelo `sku_selecionado`), mantendo textos curtos para caber todas as 20 ofertas sem truncar.
 
 **Cumpra este formato EXATAMENTE:**
 {
@@ -141,8 +143,7 @@ Sua resposta deve ser um JSON ESTRITO. O JSON deve conter uma chave principal "o
       "percentual_desconto": 30,
       "comissao_percent": 5.0,
       "lucro_estimado_reais": 2.50,
-      "url_afiliado": "URL_AFILIADO_AQUI",
-      "razao_selecao": "Justificativa breve e lógica (Ex: 'Alto desconto + comissão atrativa no sweet spot de hardware').",
+      "razao_selecao": "Justificativa breve (max 12 palavras).",
       "copy_venda": {
         "titulo": "Título Magnético de Venda (Max 50 caracteres)",
         "corpo": "Texto de 1-2 frases focado em [Problema + Solução + Escassez].",
@@ -158,6 +159,7 @@ A copy **NÃO** é descritiva; ela é **PERSUASIVA**.
 * **Use:** "Você finalmente pode...", "Pare de [Problema] com..."
 * **Foco:** Benefício Imediato + Escassez (desconto/limite).
 * **Tom:** Direto, entusiasmado, ligeiramente urgente. "Geek para Geek", mas sem jargões que exijam um manual.
+* **REGRA DE VERACIDADE DO RADAR (OBRIGATÓRIA):** É estritamente proibido mencionar "mínima histórica", "menor preço registrado", "menor preço", "em mínima" ou "recorde de preço" no título, corpo ou CTA de qualquer produto cujo campo `menor_preco_historico` seja `false` (ou ausente). Só use essa alegação quando `menor_preco_historico` for explicitamente `true`.
 """
 
 # --- 3. Funções de Scraping e Processamento ---
@@ -612,7 +614,9 @@ def extrair_dados_mercadolivre_live(url, categoria_padrao="Geral"):
 def gerar_json_para_ia(df):
     if df is None or df.empty:
         return None
-    return df.to_json(orient="records", force_ascii=False, indent=2)
+    colunas_pesadas = [c for c in ("url_afiliado", "imagem_url", "score_qualidade") if c in df.columns]
+    df_enxuto = df.drop(columns=colunas_pesadas) if colunas_pesadas else df
+    return df_enxuto.to_json(orient="records", force_ascii=False, indent=2)
 
 
 def _extrair_texto_resposta_gemini(result):
@@ -909,6 +913,44 @@ def parsear_resposta_gemini(raw_text, candidatas_fallback=None, qtd_ml=15, qtd_m
             )
 
     if oportunidades:
+        total_alvo = int(qtd_ml) + int(qtd_magalu)
+        if candidatas_fallback is not None and 0 < len(oportunidades) < total_alvo:
+            lista_cand = _converter_candidatas_para_lista(candidatas_fallback)
+            skus_usados = {
+                str(op.get("sku_selecionado", "") or "").strip()
+                for op in oportunidades
+                if op.get("sku_selecionado")
+            }
+            nomes_usados = {
+                str(op.get("nome_produto", "") or "").strip().lower()[:40]
+                for op in oportunidades
+                if op.get("nome_produto")
+            }
+            restantes = [
+                row for row in lista_cand
+                if str(row.get("sku", "") or "").strip() not in skus_usados
+                and str(row.get("nome_produto", "") or "").strip().lower()[:40] not in nomes_usados
+            ]
+            atuais_ml = sum(1 for op in oportunidades if "mercado" in str(op.get("loja", "")).lower())
+            atuais_mg = sum(1 for op in oportunidades if "magalu" in str(op.get("loja", "")).lower())
+            faltam_ml = max(0, int(qtd_ml) - atuais_ml)
+            faltam_mg = max(0, int(qtd_magalu) - atuais_mg)
+            faltam_total = total_alvo - len(oportunidades)
+            while faltam_ml + faltam_mg < faltam_total:
+                faltam_ml += 1
+
+            extras = gerar_oportunidades_fallback(
+                restantes, qtd_ml=faltam_ml, qtd_magalu=faltam_mg
+            )[:faltam_total]
+            if extras:
+                logging.warning(
+                    f"⚠️ Gemini retornou apenas {len(oportunidades)}/{total_alvo} ofertas; "
+                    f"complementando {len(extras)} via ranking determinístico."
+                )
+                oportunidades = list(oportunidades) + extras
+                if origem == "gemini":
+                    origem = "gemini_complementado"
+
         logging.info(f"🧠 Parser Gemini OK ({origem}): {len(oportunidades)} oportunidades carregadas.")
         return {"oportunidades": oportunidades, "_origem": origem}
 
@@ -2395,7 +2437,7 @@ def enriquecer_e_atualizar_historico_precos(
 
 
 def enriquecer_oportunidades_com_radar(oportunidades_dict, df_produtos):
-    """Propaga os sinais do Radar de Queda Real para o JSON retornado pela IA."""
+    """Propaga sinais do Radar 180d e re-hidrata url_afiliado/imagem_url pelo SKU."""
     if not oportunidades_dict or "oportunidades" not in oportunidades_dict:
         return oportunidades_dict
 
@@ -2409,6 +2451,13 @@ def enriquecer_oportunidades_com_radar(oportunidades_dict, df_produtos):
             "menor_preco_historico": bool(row.get("menor_preco_historico", False)),
             "queda_real_percent": float(row.get("queda_real_percent", 0.0) or 0.0),
             "preco_medio_historico": float(row.get("preco_medio_historico", 0.0) or 0.0),
+            "url_afiliado": row.get("url_afiliado"),
+            "imagem_url": row.get("imagem_url"),
+            "preco_antigo": row.get("preco_antigo"),
+            "categoria": row.get("categoria"),
+            "loja": row.get("loja"),
+            "comissao_percent": row.get("comissao_percent"),
+            "lucro_estimado_reais": row.get("lucro_estimado_reais"),
         }
         sku = str(row.get("sku", ""))
         url_af = str(row.get("url_afiliado", "") or "")
@@ -2426,7 +2475,20 @@ def enriquecer_oportunidades_com_radar(oportunidades_dict, df_produtos):
         nome_op = str(op.get("nome_produto", "") or "").strip().lower()[:40]
         extra = mapa_sku.get(sku) or mapa_url.get(url_op) or mapa_nome.get(nome_op)
         if extra:
-            op.update(extra)
+            op["menor_preco_historico"] = extra["menor_preco_historico"]
+            op["queda_real_percent"] = extra["queda_real_percent"]
+            op["preco_medio_historico"] = extra["preco_medio_historico"]
+            for campo in (
+                "url_afiliado",
+                "imagem_url",
+                "preco_antigo",
+                "categoria",
+                "loja",
+                "comissao_percent",
+                "lucro_estimado_reais",
+            ):
+                if not op.get(campo) and extra.get(campo) is not None:
+                    op[campo] = extra[campo]
 
     return oportunidades_dict
 
@@ -2434,6 +2496,12 @@ def enriquecer_oportunidades_com_radar(oportunidades_dict, df_produtos):
 # --- 4. O Maestro da Orquestra (Bloco Principal Modificado) ---
 
 if __name__ == "__main__":
+    import argparse
+
+    cli_parser = argparse.ArgumentParser(add_help=False)
+    cli_parser.add_argument("--run-editorial", action="store_true", help="Força execução do bloco editorial RSS")
+    args_cli, _ = cli_parser.parse_known_args()
+
     configurar_gemini(obrigatorio=True)
 
     conn_db = storage_db.conectar_db()
@@ -2657,6 +2725,18 @@ if __name__ == "__main__":
                 conn=conn_db,
                 canal_resumo=",".join(canais_usados),
             )
+
+        # 📰 BLOCO EDITORIAL RSS (100% isolado — falha aqui nunca impacta ofertas nem SQLite)
+        try:
+            import rss_editorial
+            res_editorial = rss_editorial.executar_bloco_editorial(
+                conn=conn_db,
+                oportunidades_dict=oportunidades_dict,
+                forcar_execucao=args_cli.run_editorial,
+            )
+            logging.info(f"📰 Bloco Editorial RSS finalizado: {res_editorial}")
+        except Exception as ed_err:
+            logging.warning(f"Falha isolada no bloco editorial RSS (ofertas preservadas): {ed_err}")
 
         # 📊 TELEMETRIA & DASHBOARD HTML DE ACOMPANHAMENTO (Automático + Painel de Vendas Reais)
         try:

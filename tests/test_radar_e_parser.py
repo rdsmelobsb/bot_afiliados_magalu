@@ -264,17 +264,24 @@ class TestRadar180dEParserGemini(unittest.TestCase):
             for j in range(6)
         ]
 
-        # 1. JSON truncado no 3º item -> resgata os 2 itens íntegros
+        # 1. JSON truncado no 3º item -> sem fallback devolve 2 íntegros; com fallback complementa para 20
         truncado = (
             '{"oportunidades": ['
-            '{"sku_selecionado": "ML_0", "nome_produto": "Prod 0", "preco_atual": 120},'
-            '{"sku_selecionado": "ML_1", "nome_produto": "Prod 1", "preco_atual": 121},'
+            '{"sku_selecionado": "ML_0", "nome_produto": "Prod 0", "loja": "Mercado Livre", "preco_atual": 120},'
+            '{"sku_selecionado": "ML_1", "nome_produto": "Prod 1", "loja": "Mercado Livre", "preco_atual": 121},'
             '{"sku_selecionado": "ML_2", "nome_produto": "Cortado no mei'
         )
         with self.assertLogs(level="WARNING"):
-            res_parc = magalu_scrapper.parsear_resposta_gemini(truncado, candidatas_fallback=candidatas)
+            res_parc = magalu_scrapper.parsear_resposta_gemini(truncado, candidatas_fallback=None)
         self.assertEqual(res_parc["_origem"], "gemini_parcial")
         self.assertEqual(len(res_parc["oportunidades"]), 2)
+
+        with self.assertLogs(level="WARNING"):
+            res_parc_comp = magalu_scrapper.parsear_resposta_gemini(truncado, candidatas_fallback=candidatas)
+        self.assertEqual(res_parc_comp["_origem"], "gemini_parcial")
+        self.assertEqual(len(res_parc_comp["oportunidades"]), 20)
+        self.assertEqual(res_parc_comp["oportunidades"][0]["sku_selecionado"], "ML_0")
+        self.assertEqual(res_parc_comp["oportunidades"][1]["sku_selecionado"], "ML_1")
 
         # 2. Resposta totalmente mal-formada / {"erro": ...} / lista vazia -> ativa fallback 15 ML + 5 Magalu
         for resposta_ruim in (
@@ -294,6 +301,88 @@ class TestRadar180dEParserGemini(unittest.TestCase):
             self.assertEqual(qtd_ml, 15)
             self.assertEqual(qtd_mg, 5)
             self.assertTrue(any("Parser Gemini sem oportunidades válidas" in msg for msg in cm.output))
+
+    def test_prompt_proibe_minima_alucinada_e_complementa_quando_ia_para_em_8(self):
+        # 1. Regra de veracidade do Radar presente no system prompt
+        self.assertIn("REGRA DE VERACIDADE DO RADAR", magalu_scrapper.ALPHA_PROFIT_SYSTEM_PROMPT)
+        self.assertIn("menor_preco_historico", magalu_scrapper.ALPHA_PROFIT_SYSTEM_PROMPT)
+
+        # 2. IA retorna apenas 8 itens (ex: parou antes dos 20) e omite url_afiliado -> parser complementa para 20 e re-hidrata URLs
+        candidatas = [
+            {
+                "sku": f"ML_{i}",
+                "nome_produto": f"Produto ML {i}",
+                "loja": "Mercado Livre",
+                "categoria": "Games",
+                "preco_atual": 100.0 + i,
+                "preco_antigo": 180.0,
+                "percentual_desconto": 30.0,
+                "comissao_percent": 6.5,
+                "lucro_estimado_reais": 8.0,
+                "url_afiliado": f"https://ml.test/{i}?matt_tool=61727000&matt_word=rafaelmelo825",
+                "imagem_url": f"https://img.test/{i}.jpg",
+                "menor_preco_historico": False,
+                "queda_real_percent": 0.0,
+                "preco_medio_historico": 120.0,
+                "score_qualidade": 100.0 - i,
+            }
+            for i in range(18)
+        ] + [
+            {
+                "sku": f"MAGALU_{j}",
+                "nome_produto": f"Produto Magalu {j}",
+                "loja": "Magalu",
+                "categoria": "Informática",
+                "preco_atual": 200.0 + j,
+                "preco_antigo": 300.0,
+                "percentual_desconto": 28.0,
+                "comissao_percent": 4.0,
+                "lucro_estimado_reais": 9.0,
+                "url_afiliado": f"https://magalu.test/{j}",
+                "imagem_url": f"https://img.test/m{j}.jpg",
+                "menor_preco_historico": False,
+                "queda_real_percent": 0.0,
+                "preco_medio_historico": 220.0,
+                "score_qualidade": 90.0 - j,
+            }
+            for j in range(6)
+        ]
+
+        oito_da_ia = [
+            {
+                "sku_selecionado": f"ML_{i}",
+                "nome_produto": f"Produto ML {i}",
+                "loja": "Mercado Livre",
+                "preco_atual": 100.0 + i,
+                "percentual_desconto": 30.0,
+                "copy_venda": {"titulo": f"Oferta {i}", "corpo": "Corpo", "cta": "Confira"},
+            }
+            for i in range(6)
+        ] + [
+            {
+                "sku_selecionado": f"MAGALU_{j}",
+                "nome_produto": f"Produto Magalu {j}",
+                "loja": "Magalu",
+                "preco_atual": 200.0 + j,
+                "percentual_desconto": 28.0,
+                "copy_venda": {"titulo": f"Magalu {j}", "corpo": "Corpo", "cta": "Confira"},
+            }
+            for j in range(2)
+        ]
+
+        with self.assertLogs(level="WARNING"):
+            res = magalu_scrapper.parsear_resposta_gemini(
+                json.dumps({"oportunidades": oito_da_ia}),
+                candidatas_fallback=candidatas,
+                qtd_ml=15,
+                qtd_magalu=5,
+            )
+        self.assertEqual(res["_origem"], "gemini_complementado")
+        self.assertEqual(len(res["oportunidades"]), 20)
+        res = magalu_scrapper.enriquecer_oportunidades_com_radar(res, candidatas)
+        self.assertIn("matt_tool=61727000", res["oportunidades"][0]["url_afiliado"])
+        self.assertEqual(sum(1 for x in res["oportunidades"] if x["loja"] == "Mercado Livre"), 15)
+        self.assertEqual(sum(1 for x in res["oportunidades"] if x["loja"] == "Magalu"), 5)
 
 
 if __name__ == "__main__":

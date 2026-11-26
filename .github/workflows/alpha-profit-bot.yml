@@ -4,6 +4,12 @@ name: 'Alpha-Profit: Execução Automática (3x ao Dia)'
 
 on:
   workflow_dispatch:
+    inputs:
+      run_editorial:
+        description: 'Forçar execução do bloco editorial RSS fora da janela das 15h BRT'
+        required: false
+        type: boolean
+        default: false
   # Reativar após validação das 3 fases em produção (10h, 15h e 20h BRT):
   # schedule:
   #   - cron: '0 13,18,23 * * *'
@@ -31,7 +37,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq ffmpeg
           python -m pip install --upgrade pip
-          pip install pandas requests beautifulsoup4 google-generativeai pillow tweepy edge-tts
+          pip install pandas requests beautifulsoup4 google-generativeai pillow tweepy edge-tts feedparser
           npm install -g hyperframes
           ffmpeg -version | head -n 1
           hyperframes --version || true
@@ -72,8 +78,15 @@ jobs:
           echo "📊 Baseline SQLite (historico_precos): ${BASELINE} linhas"
 
       - name: '4. Executar o Script (magalu_scrapper.py)'
-        run: python magalu_scrapper.py
+        run: |
+          if [ "${{ inputs.run_editorial }}" = "true" ]; then
+            python magalu_scrapper.py --run-editorial
+          else
+            python magalu_scrapper.py
+          fi
         env:
+          EDITORIAL_ENABLED: 'true'
+          EDITORIAL_TELEGRAM_ENABLED: 'false'
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           EMAIL_USER: ${{ secrets.EMAIL_USER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
