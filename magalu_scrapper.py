@@ -1303,10 +1303,10 @@ def enviar_oportunidade_telegram(bot_token, chat_id, oportunidade, imagem_url=No
         return False
 
 
-def disparar_canal_telegram(bot_token, chat_id, oportunidades_dict, df_todos_produtos=None, intervalo_segundos=3):
+def disparar_canal_telegram(bot_token, chat_id, oportunidades_dict, df_todos_produtos=None, intervalo_segundos=3, max_posts=10):
     """
-    Percorre a lista de oportunidades e dispara uma a uma no canal do Telegram,
-    retornando a lista de SKUs publicados para registro no histórico anti-repetição.
+    Seleciona as Top `max_posts` oportunidades (priorizando mínima histórica e maior queda real)
+    e dispara no canal do Telegram, retornando a lista de SKUs publicados para o histórico de 72h.
     """
     skus_postados = []
     if not bot_token or not chat_id:
@@ -1317,6 +1317,22 @@ def disparar_canal_telegram(bot_token, chat_id, oportunidades_dict, df_todos_pro
     if not oportunidades:
         logging.info("Nenhuma oportunidade para enviar ao Telegram.")
         return skus_postados
+
+    try:
+        max_posts = max(1, int(os.getenv("TELEGRAM_MAX_POSTS", str(max_posts))))
+    except ValueError:
+        max_posts = 10
+
+    oportunidades_selecionadas = sorted(
+        oportunidades,
+        key=lambda op: (
+            (150.0 if op.get("menor_preco_historico") else 0.0) +
+            float(op.get("queda_real_percent", 0.0) or 0.0) * 3.0 +
+            float(op.get("percentual_desconto", 0.0) or 0.0) * 0.6 +
+            float(op.get("lucro_estimado_reais", 0.0) or 0.0) * 0.4
+        ),
+        reverse=True,
+    )[:max_posts]
 
     # Indexa imagem_url e preco_antigo por SKU, URL e Nome (evita perder foto se a IA alterar o SKU)
     mapa_por_sku = {}
@@ -1339,10 +1355,10 @@ def disparar_canal_telegram(bot_token, chat_id, oportunidades_dict, df_todos_pro
             if nome_norm:
                 mapa_por_nome[nome_norm] = info
 
-    logging.info(f"🚀 Iniciando postagem de {len(oportunidades)} ofertas no Canal do Telegram...")
+    logging.info(f"🚀 Iniciando postagem de {len(oportunidades_selecionadas)}/{len(oportunidades)} ofertas no Canal do Telegram...")
     sucessos = 0
 
-    for i, op in enumerate(oportunidades):
+    for i, op in enumerate(oportunidades_selecionadas):
         sku = str(op.get("sku_selecionado", ""))
         url_op = str(op.get("url_afiliado", "") or "")
         nome_op = str(op.get("nome_produto", "") or "").strip().lower()[:40]
@@ -1362,10 +1378,10 @@ def disparar_canal_telegram(bot_token, chat_id, oportunidades_dict, df_todos_pro
             if sku_real:
                 skus_postados.append(sku_real)
 
-        if i < len(oportunidades) - 1:
+        if i < len(oportunidades_selecionadas) - 1:
             time.sleep(intervalo_segundos)
 
-    logging.info(f"🎉 Finalizado: {sucessos}/{len(oportunidades)} ofertas publicadas no Telegram com sucesso!")
+    logging.info(f"🎉 Finalizado: {sucessos}/{len(oportunidades_selecionadas)} ofertas publicadas no Telegram com sucesso!")
     return skus_postados
 
 
@@ -1830,7 +1846,7 @@ def formatar_texto_facebook(oportunidade, preco_antigo=None):
     return "\n".join(linhas)
 
 
-def disparar_facebook_page(oportunidades_dict, df_todos_produtos=None, max_posts=5, intervalo_segundos=6):
+def disparar_facebook_page(oportunidades_dict, df_todos_produtos=None, max_posts=3, intervalo_segundos=6):
     """
     Publica as melhores ofertas na Página do Facebook via Meta Graph API (100% gratuito):
       1. Sobe foto JPEG real (via Pillow, funciona para ML e Magalu) com legenda limpa (SEM link).
@@ -1848,9 +1864,9 @@ def disparar_facebook_page(oportunidades_dict, df_todos_produtos=None, max_posts
         return 0
 
     try:
-        max_posts = int(os.getenv("FACEBOOK_MAX_POSTS", str(max_posts)))
+        max_posts = max(1, int(os.getenv("FACEBOOK_MAX_POSTS", str(max_posts))))
     except ValueError:
-        max_posts = 5
+        max_posts = 3
 
     # Descobre automaticamente o PAGE_ID e garante que estamos usando um Token de Página
     # (Se o secret for um Token de Usuário com pages_show_list, troca automaticamente via /me/accounts)
@@ -1908,13 +1924,13 @@ def disparar_facebook_page(oportunidades_dict, df_todos_produtos=None, max_posts
             if nome_norm:
                 mapa_por_nome[nome_norm] = info
 
-    # Seleciona as Top N ofertas (Nicho Gamestore + Quedas Reais do Radar + desconto + lucro estimado)
+    # Seleciona as Top N ofertas (Nicho Gamestore + prioridade máxima para Mínima Histórica e Queda Real)
     selecionadas = sorted(
         oportunidades,
         key=lambda op: (
             _bonus_nicho_gamestore(op) +
-            (100.0 if op.get("menor_preco_historico") else 0.0) +
-            float(op.get("queda_real_percent", 0.0) or 0.0) * 2.0 +
+            (200.0 if op.get("menor_preco_historico") else 0.0) +
+            float(op.get("queda_real_percent", 0.0) or 0.0) * 3.5 +
             float(op.get("percentual_desconto", 0.0) or 0.0) * 0.6 +
             float(op.get("lucro_estimado_reais", 0.0) or 0.0) * 0.4
         ),
@@ -2786,13 +2802,14 @@ if __name__ == "__main__":
             df_todos_produtos=df_produtos 
         )
 
-        # 🚀 DISPARO AUTOMÁTICO NO TELEGRAM (Canal de Ofertas / Grupo VIP)
+        # 🚀 DISPARO AUTOMÁTICO NO TELEGRAM (Top 10 por rodada — anti-fadiga)
         skus_postados = disparar_canal_telegram(
             bot_token=os.getenv("TELEGRAM_BOT_TOKEN"),
             chat_id=os.getenv("TELEGRAM_CHAT_ID"),
             oportunidades_dict=oportunidades_dict,
             df_todos_produtos=df_produtos,
-            intervalo_segundos=3
+            intervalo_segundos=3,
+            max_posts=10
         )
 
         # 🐦 DISPARO AUTOMÁTICO NO X (Twitter) — Modo Econômico (Top 2 sem URL = ~US$ 0,015/post)
@@ -2811,11 +2828,11 @@ if __name__ == "__main__":
             intervalo_segundos=6
         ) or 0
 
-        # 📘 DISPARO AUTOMÁTICO NA PÁGINA DO FACEBOOK — 100% Gratuito (Top 5 foto limpa + link no 1º comentário)
+        # 📘 DISPARO AUTOMÁTICO NA PÁGINA DO FACEBOOK — 100% Gratuito (Top 3 foto limpa + link no 1º comentário)
         posts_facebook = disparar_facebook_page(
             oportunidades_dict=oportunidades_dict,
             df_todos_produtos=df_produtos,
-            max_posts=5,
+            max_posts=3,
             intervalo_segundos=6
         ) or 0
 

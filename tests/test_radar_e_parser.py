@@ -384,6 +384,97 @@ class TestRadar180dEParserGemini(unittest.TestCase):
         self.assertEqual(sum(1 for x in res["oportunidades"] if x["loja"] == "Mercado Livre"), 15)
         self.assertEqual(sum(1 for x in res["oportunidades"] if x["loja"] == "Magalu"), 5)
 
+    def test_cadencia_semana_1_limites_facebook_3_e_telegram_10(self):
+        from unittest.mock import patch
+
+        oportunidades = [
+            {
+                "sku_selecionado": f"ML_{i}",
+                "nome_produto": f"Mouse Gamer {i}",
+                "loja": "Mercado Livre",
+                "categoria": "Games",
+                "preco_atual": 150.0 + i,
+                "percentual_desconto": 25.0,
+                "lucro_estimado_reais": 10.0,
+                "url_afiliado": f"https://mercadolivre.com.br/p/MLB{i}?matt_tool=61727000&matt_word=rafaelmelo825",
+                "imagem_url": "",
+                "menor_preco_historico": (i == 18),
+                "queda_real_percent": 32.0 if i == 19 else (28.0 if i == 18 else float(i)),
+                "copy_venda": {"titulo": f"Mouse Gamer {i}", "corpo": "Corpo", "cta": "Confira"},
+            }
+            for i in range(20)
+        ]
+        ops_dict = {"oportunidades": oportunidades}
+
+        # 1. Telegram limitado a 10 ofertas priorizando mínima histórica / maior queda real
+        skus_tg = []
+
+        def fake_envio_tg(bot_token, chat_id, op, imagem_url=None, preco_antigo=None):
+            skus_tg.append(op["sku_selecionado"])
+            return True
+
+        with patch.dict(os.environ, {"TELEGRAM_MAX_POSTS": "10"}, clear=False):
+            with patch.object(magalu_scrapper, "enviar_oportunidade_telegram", side_effect=fake_envio_tg):
+                with patch.object(magalu_scrapper.time, "sleep", return_value=None):
+                    postados_tg = magalu_scrapper.disparar_canal_telegram(
+                        "fake_bot", "@promosgeektech", ops_dict, intervalo_segundos=0
+                    )
+
+        self.assertEqual(len(postados_tg), 10)
+        self.assertEqual(skus_tg[0], "ML_18")  # menor_preco_historico=True tem prioridade máxima
+        self.assertEqual(skus_tg[1], "ML_19")  # maior queda_real_percent em seguida
+
+        # 2. Facebook Feed limitado a 3 ofertas (foto/feed + comentário) priorizando mínima / queda real
+        feed_chamados = []
+
+        class FakeResp:
+            def __init__(self, status_code, payload):
+                self.status_code = status_code
+                self._payload = payload
+                self.text = json.dumps(payload)
+
+            def json(self):
+                return self._payload
+
+        def fake_get(url, params=None, timeout=12):
+            if url.endswith("/me/accounts"):
+                return FakeResp(200, {"data": [{"id": "page_1", "name": "Gamestore", "access_token": "tok_page"}]})
+            return FakeResp(200, {"id": "page_1"})
+
+        def fake_post(url, data=None, files=None, timeout=15):
+            if url.endswith("/feed"):
+                feed_chamados.append(data.get("message", ""))
+                return FakeResp(200, {"id": f"post_{len(feed_chamados)}"})
+            if url.endswith("/comments"):
+                return FakeResp(200, {"id": "comment_1"})
+            return FakeResp(400, {})
+
+        with patch.dict(os.environ, {"FACEBOOK_PAGE_TOKEN": "tok_user", "FACEBOOK_MAX_POSTS": "3"}, clear=False):
+            with patch.object(magalu_scrapper.requests, "get", side_effect=fake_get):
+                with patch.object(magalu_scrapper.requests, "post", side_effect=fake_post):
+                    with patch.object(magalu_scrapper.time, "sleep", return_value=None):
+                        total_fb = magalu_scrapper.disparar_facebook_page(ops_dict, intervalo_segundos=0)
+
+        self.assertEqual(total_fb, 3)
+        self.assertEqual(len(feed_chamados), 3)
+        self.assertIn("Mouse Gamer 18", feed_chamados[0])
+        self.assertIn("Mouse Gamer 19", feed_chamados[1])
+
+        # 3. Workflow mantém schedule comentado (cron-job.org) e feature flags calibradas
+        wf_path = Path(__file__).resolve().parent.parent / ".github" / "workflows" / "alpha-profit-bot.yml"
+        wf_txt = wf_path.read_text(encoding="utf-8")
+        self.assertIn("# schedule:", wf_txt)
+        self.assertIn("cron-job.org", wf_txt)
+        for flag in (
+            "X_ENABLED: 'false'",
+            "THREADS_ENABLED: 'false'",
+            "IG_ENABLED: 'false'",
+            "AMAZON_ENABLED: 'false'",
+            "FACEBOOK_MAX_POSTS: '3'",
+            "TELEGRAM_MAX_POSTS: '10'",
+        ):
+            self.assertIn(flag, wf_txt)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,9 +7,9 @@
 
 ## 📌 Visão Geral e Arquitetura
 
-O **Alpha-Profit** roda 100% serverless no **GitHub Actions** na janela das **10h, 15h e 20h BRT** (`13:00`, `18:00` e `23:00` UTC), selecionando **20 ofertas inéditas por rodada** (**15 Mercado Livre + 5 Magalu**) e publicando conteúdo editorial Tech/Gamer na rodada das **15h BRT**.
+O **Alpha-Profit** roda 100% serverless no **GitHub Actions** às **10h, 15h e 20h BRT** (`13:00`, `18:00` e `23:00` UTC), acionado externamente via **`cron-job.org` → GitHub API (`workflow_dispatch`)** para garantir pontualidade sem atrasos de fila do `schedule:` nativo (que permanece comentado para evitar execuções duplicadas). Por rodada, minera **20 ofertas** (**15 Mercado Livre + 5 Magalu** no Mês 1), aplica cadência anti-fadiga nos canais (**Top 3 no Feed `Gamestore` + Top 10 no Telegram**) e publica o **Motor Editorial RSS** 1x ao dia na janela das **15h BRT**.
 
-> **Canais pessoais desativados:** **X (Twitter)** e **Threads** ficam estritamente desligados por padrão (`X_ENABLED=false` e `THREADS_ENABLED=false`), mantendo 100% do foco orgânico e de marca na Página **`Gamestore`** e no Telegram **`@promosgeektech`**.
+> **Plano 90 Dias & Escopo:** Veja o roadmap completo em [ESTRATEGIA_90_DIAS.md](ESTRATEGIA_90_DIAS.md) — foco exclusivo em **Facebook (`Gamestore`) + Instagram (`Gamestore`) + Telegram (`@promosgeektech`)**, com expansão para **Amazon Brasil** no Mês 2. **WhatsApp** está fora de escopo nos Meses 1–6 (Mês 7+), e **X / Threads** permanecem desligados (`X_ENABLED=false`, `THREADS_ENABLED=false`).
 
 ```mermaid
 flowchart TD
@@ -99,11 +99,12 @@ flowchart TD
 
 | Canal | Ofertas (3x/dia) | Editorial RSS (1x/dia — 15h BRT) | Estratégia & Custo |
 | :--- | :---: | :---: | :--- |
-| **Facebook `Gamestore` (Feed)** | **Top 5** (Nicho Gamer) | **1 Card 4:5** (sem narração) | Foto limpa **sem URL** + link automático no **1º comentário** — **100% Grátis** |
+| **Facebook `Gamestore` (Feed)** | **Top 3** (Mínima Histórica + Nicho Gamer) | **1 Card 4:5** (sem narração) | Foto limpa **sem URL** + link automático no **1º comentário** — **100% Grátis** |
 | **Facebook `Gamestore` (Stories)** | **2 Cards 9:16** (Nicho Gamer) | **1 Story 9:16** (sem narração) | Cards HD `1080×1920` via `photo_stories` — **100% Grátis** |
 | **Facebook `Gamestore` (Reels)** | **1 MP4 9:16** (Nicho Gamer) | **1 Reel MP4 9:16** (Safe Zone) | **HyperFrames + Thalita** + link no **1º comentário** — **100% Grátis** |
-| **Telegram** (`@promosgeektech`) | **20** (15 ML + 5 Magalu) | **1 Card 4:5** (`GIRO GAMESTORE`) | Foto JPEG + Copy + Botão Inline — **100% Grátis** |
+| **Telegram** (`@promosgeektech`) | **Top 10** (Mínima Histórica + Queda Real) | **1 Card 4:5** (`GIRO GAMESTORE`) | Foto JPEG + Copy + Botão Inline — **100% Grátis** |
 | **E-mail (Gmail)** | **20 + CSV** | — | Resumo HTML + planilha CSV — **100% Grátis** |
+| **Instagram `Gamestore`** | *Mês 2* (`IG_ENABLED=false`) | *Mês 2* (`IG_ENABLED=false`) | Reuso de CDN Meta + Graph API (`/{ig_user_id}/media`) |
 | **X (Twitter) / Threads** | **Desativado** | **Desativado** | `X_ENABLED=false` e `THREADS_ENABLED=false` (contas pessoais) |
 
 ### 5. Dashboard HTML Offline (`dashboard_generator.py`)
@@ -123,6 +124,7 @@ flowchart TD
 │   └── test_rss_editorial.py          # Testes do motor RSS (noticia_id, retry, Card 4:5, Story 9:16, Reel)
 ├── .gitignore                         # Ignora *.db, *.db.gz, caches e media_output/
 ├── GEMINI.md                          # Regras técnicas e workflow do projeto
+├── ESTRATEGIA_90_DIAS.md              # Plano estratégico 90d (FB + IG + TG e Amazon Brasil)
 ├── magalu_scrapper.py                 # Orquestrador principal (Scrapers, Radar 180d, Gemini e Canais)
 ├── storage_db.py                      # Camada SQLite 180d + CLI (--init/--migrate/--cleanup/--validate)
 ├── rss_editorial.py                   # Motor Editorial RSS Tech/Gamer (Card 4:5 + Story 9:16 + Reel 9:16)
@@ -148,6 +150,8 @@ Configure em `Settings` → `Secrets and variables` → `Actions`:
 | `EMAIL_PASSWORD` | Secret | Senha de aplicativo do Gmail (16 dígitos) | Sim |
 | `DATA_REPO_TOKEN` | Secret | Token (PAT) com permissão `Contents: Read & Write` no repo privado de dados | Recomendado |
 | `DATA_REPO_OWNER_NAME` | Variable | Repo privado das Releases do SQLite (ex: `usuario/alpha-profit-data`) | Recomendado |
+| `FACEBOOK_MAX_POSTS` / `TELEGRAM_MAX_POSTS` | Env (Workflow) | Limites anti-fadiga por rodada (`3` no Feed FB, `10` no Telegram) | Configurado |
+| `IG_ENABLED` / `AMAZON_ENABLED` | Env (Workflow) | Flags de preparação para Mês 2 (`false` na Semana 1) | Configurado |
 | `X_*` / `THREADS_ACCESS_TOKEN` | Secret | Mantidos opcionais/inativos (`X_ENABLED=false`, `THREADS_ENABLED=false`) | Não |
 
 ---
@@ -193,9 +197,11 @@ python dashboard_generator.py
 - [x] Fábrica **HyperFrames + Thalita (`edge-tts`)** com Safe Zone de Reels + Cards 4:5 e Stories 9:16 sem narração.
 - [x] **Motor Editorial RSS** diário com copy humanizada anti-IA, `noticia_id`, retry automático e Card 4:5 + Story 9:16 + Reel 9:16.
 - [x] Suíte de testes automatizados (`tests/test_storage_db.py`, `tests/test_radar_e_parser.py`, `tests/test_rss_editorial.py`).
-- [ ] Reativar `schedule:` (`0 13,18,23 * * *`) no workflow após validação visual final do `--editorial-only`.
-- [ ] Publicação automática de Reels/Stories no Instagram Profissional (`instagram_content_publish`).
-- [ ] Integração com Programa de Associados da Amazon Brasil.
+- [x] Calibração anti-fadiga Semana 1 (FB Top 3 + TG Top 10) e plano de 90 dias (`ESTRATEGIA_90_DIAS.md`) com agendamento via `cron-job.org`.
+- [ ] Mês 1–2: Publicação automática no Instagram Profissional (`IG_ENABLED=true`) via reuso de CDN Meta.
+- [ ] Mês 2: Integração Amazon Brasil (`AMAZON_ENABLED=true`, prefixo `AMZ_`, Radar 180d).
+- [ ] Mês 3: Dashboard v2 consolidado + CRO orientado a dados.
+- [ ] Mês 7+: Canal/Comunidade no WhatsApp (fora de escopo nos Meses 1–6).
 
 ---
 

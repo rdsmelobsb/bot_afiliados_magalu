@@ -15,7 +15,8 @@ on:
         required: false
         type: boolean
         default: false
-  # Reativar após validação das 3 fases em produção (10h, 15h e 20h BRT):
+  # Agendamento externo exato às 10h, 15h e 20h BRT feito via cron-job.org -> GitHub API (workflow_dispatch).
+  # O schedule nativo permanece comentado para evitar atrasos de fila do Actions e disparos duplicados:
   # schedule:
   #   - cron: '0 13,18,23 * * *'
 
@@ -94,6 +95,10 @@ jobs:
         env:
           X_ENABLED: 'false'
           THREADS_ENABLED: 'false'
+          IG_ENABLED: 'false'
+          AMAZON_ENABLED: 'false'
+          FACEBOOK_MAX_POSTS: '3'
+          TELEGRAM_MAX_POSTS: '10'
           EDITORIAL_ENABLED: 'true'
           EDITORIAL_TELEGRAM_ENABLED: 'true'
           EDITORIAL_STORY_ENABLED: 'true'
