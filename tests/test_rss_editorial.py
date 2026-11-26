@@ -384,6 +384,207 @@ class TestRSSEditorial(unittest.TestCase):
             )
         self.assertFalse(diag_ok["suspeita_waf"])
 
+    def test_selecao_por_noticia_id_e_unwrap_lista_com_fences(self):
+        candidatos = [
+            {
+                "id": 1,
+                "fonte": "Adrenaline",
+                "titulo": "Primeira noticia de teste",
+                "url": "https://adrenaline.com.br/noticia-1",
+                "imagem_url": "https://adrenaline.com.br/img-1.jpg",
+            },
+            {
+                "id": 2,
+                "fonte": "Tecnoblog",
+                "titulo": "Ryzen 7 9800X3D recebe ajuste oficial de preco no Brasil",
+                "url": "https://tecnoblog.net/noticias/ryzen-9800x3d-preco/",
+                "imagem_url": "https://tecnoblog.net/img/ryzen.jpg",
+            },
+        ]
+        # Sem url_escolhida, embrulhado em markdown fence + array JSON de 1 elemento
+        raw = (
+            "```json\n"
+            + json.dumps([
+                {
+                    "noticia_id": "2",
+                    "tag_categoria": "hardware",
+                    "headline_card": "Ryzen 7 9800X3D fica mais competitivo no Brasil",
+                    "destaque_card": "9800X3D",
+                    "roteiro_reel": "O Ryzen 9800X3D ganhou novo ajuste de preço nas lojas brasileiras nesta semana.",
+                    "texto_facebook": "O Ryzen 7 9800X3D começou a aparecer com preço ajustado no varejo.\n\nPara quem monta PC focado em alto FPS, o chip continua referência.\n\nVocê esperaria mais ou já fecharia upgrade agora?",
+                }
+            ])
+            + "\n```"
+        )
+        pauta = rss_editorial.parsear_resposta_editorial(raw, candidatos)
+        self.assertIsNotNone(pauta)
+        self.assertEqual(pauta["noticia_id"], 2)
+        self.assertEqual(pauta["url_escolhida"], "https://tecnoblog.net/noticias/ryzen-9800x3d-preco/")
+        self.assertEqual(pauta["fonte"], "Tecnoblog")
+        self.assertEqual(pauta["imagem_url"], "https://tecnoblog.net/img/ryzen.jpg")
+        self.assertIn("📰 Fonte: Tecnoblog", pauta["texto_telegram"])
+
+    def test_fallbacks_por_campo_sem_descartar_pauta_e_pula_so_reel(self):
+        agora_utc = datetime(2026, 11, 25, 18, 0, 0, tzinfo=timezone.utc)
+        xml_ok = f"""<?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0"><channel><item>
+          <title>Controle Xbox ganha nova edicao especial com gatilhos texturizados no Brasil</title>
+          <link>https://www.adrenaline.com.br/games/controle-xbox-edicao-especial</link>
+          <description>Novo modelo chega às lojas neste mês.</description>
+          <pubDate>{(agora_utc - timedelta(hours=1)).strftime('%a, %d %b %Y %H:%M:%S +0000')}</pubDate>
+        </item></channel></rss>"""
+
+        # JSON sem texto_telegram, sem headline_card, com destaque_card incompatível e sem roteiro_reel
+        def fake_ia(cands, ofertas):
+            return json.dumps({
+                "noticia_id": cands[0]["id"],
+                "destaque_card": "PalavraInexistenteNaManchete",
+                "texto_facebook": "A Microsoft colocou nas lojas uma nova edição especial do controle de Xbox.\n\nOs gatilhos texturizados ajudam bastante em jogos de corrida e FPS.\n\nVocê prefere controle padrão ou edição especial?",
+            })
+
+        chamadas = {"facebook": 0, "telegram": 0, "gerar_reel": 0, "facebook_reel": 0}
+        pubs = {
+            "facebook": lambda txt, card_path=None, url_oferta_comentario=None: (
+                chamadas.__setitem__("facebook", chamadas["facebook"] + 1)
+                or bool(card_path and os.path.exists(card_path) and "📰 Fonte: Adrenaline" in txt)
+            ),
+            "telegram": lambda txt, card_path=None, url_oferta=None: (
+                chamadas.__setitem__("telegram", chamadas["telegram"] + 1)
+                or bool(card_path and os.path.exists(card_path) and "Microsoft colocou nas lojas" in txt)
+            ),
+            "gerar_reel": lambda pauta, img: chamadas.__setitem__("gerar_reel", chamadas["gerar_reel"] + 1) or None,
+            "facebook_reel": lambda *a, **kw: chamadas.__setitem__("facebook_reel", chamadas["facebook_reel"] + 1) or True,
+        }
+
+        with patch.dict(
+            os.environ,
+            {
+                "EDITORIAL_ENABLED": "true",
+                "EDITORIAL_TELEGRAM_ENABLED": "true",
+                "EDITORIAL_REEL_ENABLED": "true",
+                "X_ENABLED": "false",
+                "THREADS_ENABLED": "false",
+            },
+            clear=False,
+        ):
+            with patch.object(media_generator, "OUTPUT_DIR", self.tmp_dir.name):
+                res = rss_editorial.executar_bloco_editorial(
+                    conn=self.conn,
+                    ofertas_selecionadas=[],
+                    forcar_execucao=False,
+                    agora=agora_utc,
+                    fetcher=lambda u, timeout=10: xml_ok.encode("utf-8"),
+                    gerador_ia=fake_ia,
+                    publicadores=pubs,
+                )
+
+        self.assertTrue(res["executado"])
+        self.assertLessEqual(len(res["headline_card"].split()), 9)
+        self.assertEqual(chamadas, {"facebook": 1, "telegram": 1, "gerar_reel": 0, "facebook_reel": 0})
+        self.assertEqual(res["canais"], ["facebook", "telegram"])
+
+    def test_retry_automatico_json_malformado_recupera_na_segunda_tentativa(self):
+        agora_utc = datetime(2026, 11, 25, 18, 0, 0, tzinfo=timezone.utc)
+        xml_ok = f"""<?xml version="1.0" encoding="UTF-8"?>
+        <rss version="2.0"><channel><item>
+          <title>Monitor OLED 240Hz cai de preco em promocao relampago</title>
+          <link>https://tecnoblog.net/noticias/monitor-oled-240hz-cai</link>
+          <description>Painéis OLED começam a ficar mais acessíveis.</description>
+          <pubDate>{(agora_utc - timedelta(hours=2)).strftime('%a, %d %b %Y %H:%M:%S +0000')}</pubDate>
+        </item></channel></rss>"""
+
+        tentativas = {"n": 0}
+
+        def fake_ia_retry(cands, ofertas):
+            tentativas["n"] += 1
+            if tentativas["n"] == 1:
+                return ('{"noticia_id": 1, "texto_facebook": "cortado...', "STOP")
+            return (
+                json.dumps({
+                    "noticia_id": cands[0]["id"],
+                    "tag_categoria": "HARDWARE",
+                    "headline_card": "Monitor OLED 240Hz fica mais barato",
+                    "destaque_card": "OLED 240Hz",
+                    "roteiro_reel": "",
+                    "texto_facebook": "Painel OLED de 240Hz caiu de preço nesta semana e acirrou a briga com IPS rápido.\n\nQuem joga competitivo sente na hora o tempo de resposta quase instantâneo.\n\nVocê encara OLED no desktop ou prefere IPS sem medo de burn-in?",
+                }),
+                "STOP",
+            )
+
+        pubs = {
+            "facebook": lambda txt, card_path=None, url_oferta_comentario=None: True,
+            "telegram": lambda txt, card_path=None, url_oferta=None: True,
+        }
+        with patch.dict(
+            os.environ,
+            {
+                "EDITORIAL_ENABLED": "true",
+                "EDITORIAL_TELEGRAM_ENABLED": "true",
+                "EDITORIAL_REEL_ENABLED": "false",
+            },
+            clear=False,
+        ):
+            with patch.object(media_generator, "OUTPUT_DIR", self.tmp_dir.name):
+                res = rss_editorial.executar_bloco_editorial(
+                    conn=self.conn,
+                    ofertas_selecionadas=[],
+                    forcar_execucao=False,
+                    agora=agora_utc,
+                    fetcher=lambda u, timeout=10: xml_ok.encode("utf-8"),
+                    gerador_ia=fake_ia_retry,
+                    publicadores=pubs,
+                )
+
+        self.assertEqual(tentativas["n"], 2)
+        self.assertTrue(res["executado"])
+        self.assertEqual(res["canais"], ["facebook", "telegram"])
+
+    def test_logs_diagnosticos_parser_e_extracao_finish_reason(self):
+        class FakePart:
+            def __init__(self, text):
+                self.text = text
+
+        class FakeContent:
+            def __init__(self, parts):
+                self.parts = parts
+
+        class FakeCand:
+            def __init__(self, finish_reason, parts):
+                self.finish_reason = finish_reason
+                self.content = FakeContent(parts)
+
+        class FakeResp:
+            def __init__(self):
+                self.candidates = [FakeCand("MAX_TOKENS", [FakePart('{"noticia_id": 1'), FakePart(', "x": 2')])]
+
+        txt, fr = rss_editorial._extrair_texto_resposta_gemini_editorial(FakeResp())
+        self.assertEqual(fr, "MAX_TOKENS")
+        self.assertEqual(txt, '{"noticia_id": 1, "x": 2')
+
+        candidatos = [{"id": 1, "fonte": "Voxel", "titulo": "Noticia 1", "url": "https://voxel.test/1"}]
+
+        with self.assertLogs(level="WARNING") as cm_json:
+            res_json = rss_editorial.parsear_resposta_editorial(
+                '{"noticia_id": 1, "texto_facebook": "incompleto...',
+                candidatos,
+                finish_reason="MAX_TOKENS",
+            )
+        self.assertIsNone(res_json)
+        self.assertIn("json_invalido", cm_json.output[0])
+        self.assertIn("finish_reason=MAX_TOKENS", cm_json.output[0])
+        self.assertIn("inicio=", cm_json.output[0])
+        self.assertIn("fim=", cm_json.output[0])
+
+        with self.assertLogs(level="WARNING") as cm_id:
+            res_id = rss_editorial.parsear_resposta_editorial(
+                json.dumps({"noticia_id": 99, "texto_facebook": "Texto qualquer"}),
+                candidatos,
+                finish_reason="STOP",
+            )
+        self.assertIsNone(res_id)
+        self.assertIn("noticia_nao_encontrada", cm_id.output[0])
+        self.assertIn("noticia_id=99", cm_id.output[0])
+
 
 if __name__ == "__main__":
     unittest.main()

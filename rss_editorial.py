@@ -98,8 +98,10 @@ REGRAS OBRIGATÓRIAS DE COPY (ANTI-IA / HUMANIZER):
    - Facebook Gamestore NÃO leva link externo no corpo do texto principal.
 
 FORMATO DE SAÍDA (JSON ESTRITO):
+- Retorne APENAS um objeto JSON válido (nunca lista, nunca texto fora do JSON).
+- Identifique a notícia escolhida obrigatoriamente pelo inteiro `noticia_id` (campo `id` de 1 a 30 enviado em `candidatos_rss`), sem precisar reescrever URLs longas.
 {
-  "url_escolhida": "URL exata de um dos candidatos",
+  "noticia_id": 1,
   "fonte": "Nome da fonte escolhida",
   "titulo_original": "Título original da notícia",
   "tema_normalizado": "palavras chave principais sem acentos",
@@ -109,8 +111,8 @@ FORMATO DE SAÍDA (JSON ESTRITO):
   "roteiro_reel": "Fala natural de 35 a 45 palavras para narração em voz alta.",
   "tem_match_oferta": false,
   "sku_oferta_relacionada": "",
-  "texto_facebook": "Gancho curto.\\n\\nImpacto direto no bolso ou setup.\\n\\nPergunta de escolha real?\\n\\n📰 Fonte: Adrenaline",
-  "texto_telegram": "Gancho curto.\\n\\nImpacto direto no bolso ou setup.\\n\\nPergunta de escolha real?\\n\\n📰 Fonte: Adrenaline"
+  "texto_facebook": "Gancho curto.\n\nImpacto direto no bolso ou setup.\n\nPergunta de escolha real?\n\n📰 Fonte: Adrenaline",
+  "texto_telegram": "Gancho curto.\n\nImpacto direto no bolso ou setup.\n\nPergunta de escolha real?\n\n📰 Fonte: Adrenaline"
 }
 """
 
@@ -621,8 +623,53 @@ def _resumir_ofertas_para_editorial(oportunidades_dict, limite=10):
     return resumo
 
 
-def gerar_pauta_editorial_gemini(candidatos, ofertas_resumo=None, model_name=None, limite_candidatos=30):
-    """Chama o Gemini enviando até 30 notícias balanceadas para curadoria + copy humanizada."""
+def _extrair_texto_resposta_gemini_editorial(resp):
+    """Extrai (texto, finish_reason) com segurança de objetos GenerateContentResponse."""
+    finish_reason = None
+    partes = []
+    try:
+        candidates = getattr(resp, "candidates", None) or []
+        if candidates:
+            cand0 = candidates[0]
+            finish_reason = getattr(cand0, "finish_reason", None)
+            content = getattr(cand0, "content", None)
+            for part in getattr(content, "parts", None) or []:
+                txt_part = getattr(part, "text", None)
+                if txt_part:
+                    partes.append(str(txt_part))
+    except Exception:
+        pass
+
+    if partes:
+        return "".join(partes), finish_reason
+
+    try:
+        texto = str(getattr(resp, "text", "") or "")
+    except Exception:
+        texto = ""
+    return texto, finish_reason
+
+
+def _logar_rejeicao_editorial(motivo, raw_text, finish_reason=None):
+    """Registra motivo exato da rejeição e snippets da resposta bruta para diagnóstico real."""
+    bruto = str(raw_text or "")
+    inicio = bruto[:400]
+    fim = bruto[-200:] if len(bruto) > 400 else ""
+    logging.warning(
+        f"⚠️ Editorial RSS rejeitado: motivo={motivo} | finish_reason={finish_reason} | "
+        f"chars={len(bruto)} | inicio={inicio!r} | fim={fim!r}"
+    )
+
+
+def gerar_pauta_editorial_gemini(
+    candidatos,
+    ofertas_resumo=None,
+    model_name=None,
+    limite_candidatos=30,
+    reforco_json=False,
+    retornar_meta=False,
+):
+    """Chama o Gemini enviando até 30 notícias balanceadas com ID numérico curto para curadoria + copy."""
     if not GENAI_DISPONIVEL or genai is None:
         raise RuntimeError("Biblioteca 'google-generativeai' indisponível.")
     api_key = os.getenv("GEMINI_API_KEY")
@@ -637,37 +684,87 @@ def gerar_pauta_editorial_gemini(candidatos, ofertas_resumo=None, model_name=Non
         system_instruction=EDITORIAL_SYSTEM_PROMPT,
         generation_config={
             "response_mime_type": "application/json",
-            "temperature": 0.55,
-            "max_output_tokens": 2048,
+            "temperature": 0.55 if not reforco_json else 0.35,
+            "max_output_tokens": 4096,
         },
     )
 
+    candidatos_payload = []
+    for idx, c in enumerate(selecionados, start=1):
+        try:
+            nid = int(c.get("id")) if c.get("id") is not None else idx
+        except (TypeError, ValueError):
+            nid = idx
+        candidatos_payload.append({
+            "id": nid,
+            "fonte": c.get("fonte", ""),
+            "titulo": c.get("titulo", ""),
+            "resumo": c.get("resumo", ""),
+            "publicado_em": c.get("publicado_em", ""),
+        })
+
     payload_usuario = {
-        "candidatos_rss": [
-            {
-                "fonte": c.get("fonte", ""),
-                "titulo": c.get("titulo", ""),
-                "resumo": c.get("resumo", ""),
-                "url": c.get("url", ""),
-                "publicado_em": c.get("publicado_em", ""),
-            }
-            for c in selecionados
-        ],
+        "candidatos_rss": candidatos_payload,
         "ofertas_do_dia": ofertas_resumo or [],
     }
-    prompt = (
+    instrucao_base = (
         "Escolha EXATAMENTE 1 pauta editorial entre os candidatos abaixo seguindo todas as regras "
-        "do sistema e devolva o JSON estruturado:\n\n"
-        + json.dumps(payload_usuario, ensure_ascii=False, indent=2)
+        "do sistema e devolva APENAS o objeto JSON estruturado informando `noticia_id` (int de 1 a "
+        f"{len(candidatos_payload)}):"
     )
+    if reforco_json:
+        instrucao_base = (
+            "ATENÇÃO (RETRY): sua resposta anterior falhou no parser JSON. "
+            "Devolva ESTRITAMENTE um único objeto JSON válido (sem markdown, sem comentários, sem lista) "
+            "contendo `noticia_id` (inteiro válido da lista), `texto_facebook`, `texto_telegram`, "
+            "`headline_card`, `destaque_card` e `roteiro_reel`.\n\n" + instrucao_base
+        )
+
+    prompt = instrucao_base + "\n\n" + json.dumps(payload_usuario, ensure_ascii=False, indent=2)
     resp = model.generate_content(prompt)
-    return str(getattr(resp, "text", "") or "")
+    texto, finish_reason = _extrair_texto_resposta_gemini_editorial(resp)
+    logging.info(f"🧠 Gemini editorial: finish_reason={finish_reason} | chars={len(texto)}")
+    if retornar_meta:
+        return texto, finish_reason
+    return texto
 
 
-def parsear_resposta_editorial(raw_text, candidatos, ofertas_rodada=None):
+def _extrair_noticia_id_int(valor):
+    if valor is None or isinstance(valor, bool):
+        return None
+    if isinstance(valor, int):
+        return valor
+    txt = str(valor).strip()
+    if txt.isdigit():
+        return int(txt)
+    m = re.search(r"\d+", txt)
+    if m and txt == m.group(0):
+        return int(m.group(0))
+    return None
+
+
+def _derivar_headline_curta(titulo_orig, max_palavras=9):
+    palavras = str(titulo_orig or "").strip().split()
+    return " ".join(palavras[:max_palavras]).strip()
+
+
+def _validar_destaque_na_headline(destaque_card, headline_card):
+    destaque = str(destaque_card or "").strip()
+    if not destaque or not headline_card:
+        return ""
+    tokens_hl = set(re.findall(r"[a-z0-9à-ÿ]+", headline_card.lower()))
+    tokens_dest = [t for t in re.findall(r"[a-z0-9à-ÿ]+", destaque.lower()) if len(t) >= 2]
+    if tokens_dest and any(tok in tokens_hl for tok in tokens_dest):
+        return destaque
+    if destaque.lower() in headline_card.lower():
+        return destaque
+    return ""
+
+
+def parsear_resposta_editorial(raw_text, candidatos, ofertas_rodada=None, finish_reason=None):
     """
-    Valida JSON editorial do Gemini, garante rodapé '📰 Fonte: [Fonte]', headline <= 9 palavras,
-    zero URLs no Facebook/X e match real de oferta.
+    Valida JSON editorial do Gemini com seleção preferencial por `noticia_id`,
+    logs diagnósticos detalhados e fallbacks por campo (sem descartar tudo por detalhe).
     """
     limpo = str(raw_text or "").strip()
     if limpo.startswith("```"):
@@ -675,61 +772,128 @@ def parsear_resposta_editorial(raw_text, candidatos, ofertas_rodada=None):
         limpo = re.sub(r"\s*```$", "", limpo).strip()
 
     if not limpo:
+        _logar_rejeicao_editorial("resposta_vazia", raw_text, finish_reason=finish_reason)
         return None
 
+    if not candidatos:
+        _logar_rejeicao_editorial("candidatos_vazios", raw_text, finish_reason=finish_reason)
+        return None
+
+    dados = None
+    erro_json = None
     try:
         dados = json.loads(limpo)
-    except json.JSONDecodeError:
-        ini, fim = limpo.find("{"), limpo.rfind("}")
-        if ini == -1 or fim <= ini:
-            return None
-        try:
-            dados = json.loads(limpo[ini:fim + 1])
-        except json.JSONDecodeError:
-            return None
+    except json.JSONDecodeError as exc:
+        erro_json = exc
+        ini_obj, fim_obj = limpo.find("{"), limpo.rfind("}")
+        ini_arr, fim_arr = limpo.find("["), limpo.rfind("]")
+        trecho = None
+        if ini_arr != -1 and fim_arr > ini_arr and (ini_obj == -1 or ini_arr < ini_obj):
+            trecho = limpo[ini_arr:fim_arr + 1]
+        elif ini_obj != -1 and fim_obj > ini_obj:
+            trecho = limpo[ini_obj:fim_obj + 1]
 
-    if not isinstance(dados, dict) or not candidatos:
+        if trecho:
+            try:
+                dados = json.loads(trecho)
+                erro_json = None
+            except json.JSONDecodeError as exc2:
+                erro_json = exc2
+
+    if erro_json is not None or dados is None:
+        _logar_rejeicao_editorial(f"json_invalido ({erro_json})", raw_text, finish_reason=finish_reason)
         return None
 
-    url_esc = str(dados.get("url_escolhida") or "").strip()
-    titulo_esc = str(dados.get("titulo_original") or "").strip().lower()
+    if isinstance(dados, list):
+        if len(dados) >= 1 and isinstance(dados[0], dict):
+            dados = dados[0]
+        else:
+            _logar_rejeicao_editorial("estrutura_lista_vazia_ou_invalida", raw_text, finish_reason=finish_reason)
+            return None
 
-    candidato_ref = next(
-        (c for c in candidatos if str(c.get("url", "")).strip() == url_esc),
-        None,
-    )
+    if not isinstance(dados, dict):
+        _logar_rejeicao_editorial(
+            f"estrutura_nao_dict ({type(dados).__name__})", raw_text, finish_reason=finish_reason
+        )
+        return None
+
+    # 1. Match determinístico por noticia_id (prioritário)
+    candidato_ref = None
+    nid = _extrair_noticia_id_int(dados.get("noticia_id"))
+    if nid is not None:
+        candidato_ref = next(
+            (c for c in candidatos if _extrair_noticia_id_int(c.get("id")) == nid),
+            None,
+        )
+        if candidato_ref is None and 1 <= nid <= len(candidatos):
+            candidato_ref = candidatos[nid - 1]
+
+    # 2. Fallback por url_escolhida (exata, normalizada ou hash)
+    url_esc = str(dados.get("url_escolhida") or "").strip()
+    if candidato_ref is None and url_esc:
+        url_esc_norm = url_esc.rstrip("/").lower()
+        url_esc_hash = storage_db.gerar_url_hash(url_esc)
+        candidato_ref = next(
+            (
+                c for c in candidatos
+                if str(c.get("url", "")).strip() == url_esc
+                or str(c.get("url", "")).strip().rstrip("/").lower() == url_esc_norm
+                or storage_db.gerar_url_hash(str(c.get("url", "")).strip()) == url_esc_hash
+            ),
+            None,
+        )
+
+    # 3. Fallback por titulo_original
+    titulo_esc = str(dados.get("titulo_original") or "").strip().lower()
     if candidato_ref is None and titulo_esc:
         candidato_ref = next(
             (c for c in candidatos if str(c.get("titulo", "")).strip().lower() == titulo_esc),
             None,
         )
+
     if candidato_ref is None:
+        _logar_rejeicao_editorial(
+            f"noticia_nao_encontrada (noticia_id={dados.get('noticia_id')!r}, url_escolhida={url_esc[:120]!r})",
+            raw_text,
+            finish_reason=finish_reason,
+        )
         return None
 
     fonte = str(candidato_ref.get("fonte") or dados.get("fonte") or "Redação Tech").strip()
     titulo_orig = str(candidato_ref.get("titulo") or dados.get("titulo_original") or "").strip()
-    url_real = str(candidato_ref.get("url")).strip()
+    url_real = str(candidato_ref.get("url") or "").strip()
     tema_norm = storage_db.normalizar_tema(dados.get("tema_normalizado") or titulo_orig)
 
-    # Manchete visual para o card (máx. 9 palavras)
-    hl_palavras = str(dados.get("headline_card") or titulo_orig).strip().split()
-    headline_card = " ".join(hl_palavras[:9]).strip()
-    destaque_card = str(dados.get("destaque_card") or "").strip()
+    # Fallbacks por campo: nunca descartar a pauta por campos secundários
+    headline_bruta = str(dados.get("headline_card") or "").strip()
+    headline_card = _derivar_headline_curta(headline_bruta or titulo_orig, max_palavras=9)
+    destaque_card = _validar_destaque_na_headline(dados.get("destaque_card"), headline_card)
     tag_categoria = str(dados.get("tag_categoria") or "TECH").strip().upper()[:16] or "TECH"
-    roteiro_reel = re.sub(r"\s+", " ", str(dados.get("roteiro_reel") or headline_card)).strip()
+    roteiro_reel = re.sub(r"\s+", " ", str(dados.get("roteiro_reel") or "")).strip()
 
     rodape_fonte = f"📰 Fonte: {fonte}"
 
     def _garantir_rodape_fonte(txt):
         base = sanitizar_texto_sem_urls(str(txt or "").strip())
         if not base:
-            return f"{titulo_orig}\n\n{rodape_fonte}"
+            return ""
         if f"fonte: {fonte.lower()}" not in base.lower() and f"via {fonte.lower()}" not in base.lower():
             return f"{base}\n\n{rodape_fonte}"
         return base
 
-    texto_facebook = _garantir_rodape_fonte(dados.get("texto_facebook"))
-    texto_telegram = _garantir_rodape_fonte(dados.get("texto_telegram") or texto_facebook)
+    fb_limpo = _garantir_rodape_fonte(dados.get("texto_facebook"))
+    tg_limpo = _garantir_rodape_fonte(dados.get("texto_telegram"))
+    if not fb_limpo and tg_limpo:
+        fb_limpo = tg_limpo
+    if not tg_limpo and fb_limpo:
+        tg_limpo = fb_limpo
+
+    if not fb_limpo and not tg_limpo:
+        _logar_rejeicao_editorial("sem_texto_editorial", raw_text, finish_reason=finish_reason)
+        return None
+
+    texto_facebook = fb_limpo
+    texto_telegram = tg_limpo
     texto_x = sanitizar_texto_sem_urls(dados.get("texto_x") or f"{headline_card} — Via {fonte}", max_chars=260)
     texto_threads = sanitizar_texto_sem_urls(dados.get("texto_threads") or texto_facebook, max_chars=495)
 
@@ -751,6 +915,7 @@ def parsear_resposta_editorial(raw_text, candidatos, ofertas_rodada=None):
         sku_rel = ""
 
     return {
+        "noticia_id": _extrair_noticia_id_int(candidato_ref.get("id")) or nid,
         "url_escolhida": url_real,
         "fonte": fonte,
         "titulo_original": titulo_orig,
@@ -1108,7 +1273,10 @@ def executar_bloco_editorial(
             logging.info("📰 Nenhuma pauta RSS inédita nos últimos 7 dias.")
             return {"executado": False, "motivo": "sem_pautas_ineditas_7d", "canais": []}
 
-        candidatos_ia = selecionar_candidatos_balanceados(ineditas, limite=30)
+        candidatos_ia = [
+            dict(c, id=idx)
+            for idx, c in enumerate(selecionar_candidatos_balanceados(ineditas, limite=30), start=1)
+        ]
         ofertas_lista = (
             list(ofertas_selecionadas)
             if ofertas_selecionadas is not None
@@ -1116,14 +1284,36 @@ def executar_bloco_editorial(
         )
         ofertas_resumo = _resumir_ofertas_para_editorial({"oportunidades": ofertas_lista}, limite=10)
 
-        raw_ia = (
-            gerador_ia(candidatos_ia, ofertas_resumo)
-            if gerador_ia is not None
-            else gerar_pauta_editorial_gemini(candidatos_ia, ofertas_resumo=ofertas_resumo)
-        )
-        pauta = parsear_resposta_editorial(raw_ia, candidatos=candidatos_ia, ofertas_rodada=ofertas_lista)
+        pauta = None
+        for tentativa in range(1, 3):
+            finish_reason = None
+            if gerador_ia is not None:
+                res_ia = gerador_ia(candidatos_ia, ofertas_resumo)
+                if isinstance(res_ia, tuple) and len(res_ia) == 2:
+                    raw_ia, finish_reason = res_ia
+                else:
+                    raw_ia = res_ia
+            else:
+                raw_ia, finish_reason = gerar_pauta_editorial_gemini(
+                    candidatos_ia,
+                    ofertas_resumo=ofertas_resumo,
+                    reforco_json=(tentativa > 1),
+                    retornar_meta=True,
+                )
+
+            pauta = parsear_resposta_editorial(
+                raw_ia,
+                candidatos=candidatos_ia,
+                ofertas_rodada=ofertas_lista,
+                finish_reason=finish_reason,
+            )
+            if pauta:
+                break
+            if tentativa == 1:
+                logging.warning("⚠️ Editorial RSS: 1ª tentativa retornou pauta inválida. Executando retry automático (2/2)...")
+
         if not pauta:
-            logging.warning("⚠️ Editorial RSS: Gemini não retornou pauta válida. Abortando sem erro.")
+            logging.warning("⚠️ Editorial RSS: Gemini não retornou pauta válida após 2 tentativas. Abortando sem erro.")
             return {"executado": False, "motivo": "resposta_editorial_invalida", "canais": []}
 
         # 1. Foto real da notícia (RSS -> fallback og:image) + bytes JPEG
@@ -1178,28 +1368,31 @@ def executar_bloco_editorial(
         # 3. Reel 9:16 (HyperFrames + Thalita) completamente isolado — nunca bloqueia o Card 4:5
         reel_path = None
         if _env_bool("EDITORIAL_REEL_ENABLED", default=True):
-            try:
-                fn_gen_reel = pubs.get("gerar_reel")
-                if fn_gen_reel is not None:
-                    reel_path = fn_gen_reel(pauta, img_bytes)
-                else:
-                    import media_generator
-                    reel_path = media_generator.gerar_reel_editorial_rss(
-                        headline_card=pauta["headline_card"],
-                        destaque_card=pauta["destaque_card"],
-                        tag_categoria=pauta["tag_categoria"],
-                        fonte=pauta["fonte"],
-                        roteiro_reel=pauta["roteiro_reel"],
-                        img_bytes=img_bytes,
-                    )
-                if reel_path and fn_fb_reel(
-                    reel_path,
-                    pauta["texto_facebook"],
-                    url_oferta_comentario=pauta.get("url_oferta_comentario"),
-                ):
-                    canais_ok.append("facebook_reel")
-            except Exception as reel_err:
-                logging.warning(f"Falha isolada no Reel editorial RSS (Card 4:5 preservado): {reel_err}")
+            if not str(pauta.get("roteiro_reel") or "").strip():
+                logging.info("🎬 Reel editorial pulado: roteiro_reel ausente (Card 4:5 preservado).")
+            else:
+                try:
+                    fn_gen_reel = pubs.get("gerar_reel")
+                    if fn_gen_reel is not None:
+                        reel_path = fn_gen_reel(pauta, img_bytes)
+                    else:
+                        import media_generator
+                        reel_path = media_generator.gerar_reel_editorial_rss(
+                            headline_card=pauta["headline_card"],
+                            destaque_card=pauta["destaque_card"],
+                            tag_categoria=pauta["tag_categoria"],
+                            fonte=pauta["fonte"],
+                            roteiro_reel=pauta["roteiro_reel"],
+                            img_bytes=img_bytes,
+                        )
+                    if reel_path and fn_fb_reel(
+                        reel_path,
+                        pauta["texto_facebook"],
+                        url_oferta_comentario=pauta.get("url_oferta_comentario"),
+                    ):
+                        canais_ok.append("facebook_reel")
+                except Exception as reel_err:
+                    logging.warning(f"Falha isolada no Reel editorial RSS (Card 4:5 preservado): {reel_err}")
 
         if canais_ok:
             storage_db.registrar_pauta_rss(
