@@ -1,12 +1,30 @@
-import pandas as pd
+try:
+    import pandas as pd
+    PANDAS_DISPONIVEL = True
+except ImportError:
+    pd = None
+    PANDAS_DISPONIVEL = False
+
 import json
 import requests
-from bs4 import BeautifulSoup
+
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    BeautifulSoup = None
+
 import sys
 import time
 import logging
 import os
-import google.generativeai as genai
+
+try:
+    import google.generativeai as genai
+    GENAI_DISPONIVEL = True
+except ImportError:
+    genai = None
+    GENAI_DISPONIVEL = False
+
 import smtplib
 from email.message import EmailMessage
 import csv 
@@ -15,6 +33,8 @@ import re
 import random
 from datetime import datetime, timedelta
 from io import BytesIO
+
+import storage_db
 
 try:
     from PIL import Image
@@ -34,16 +54,42 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-try:
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        logging.error("Opa! Defina a chave antes de rodar: export GEMINI_API_KEY='SUA_CHAVE'")
-        sys.exit(1)  
-    genai.configure(api_key=api_key)
-    logging.info("API do Gemini configurada com sucesso. Tudo nos conformes!")
-except Exception as e:
-    logging.error(f"Deu ruim ao configurar a API do Gemini: {e}")
-    sys.exit(1)
+_GEMINI_CONFIGURADO = False
+
+
+def configurar_gemini(obrigatorio=False):
+    """Configura a API do Gemini sob demanda para permitir importação limpa em testes."""
+    global _GEMINI_CONFIGURADO
+    if _GEMINI_CONFIGURADO:
+        return True
+    if not GENAI_DISPONIVEL:
+        msg = "Biblioteca 'google-generativeai' não instalada."
+        if obrigatorio:
+            logging.error(msg)
+            sys.exit(1)
+        logging.warning(msg)
+        return False
+
+    try:
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            msg = "Opa! Defina a chave antes de rodar: export GEMINI_API_KEY='SUA_CHAVE'"
+            if obrigatorio:
+                logging.error(msg)
+                sys.exit(1)
+            logging.warning(msg)
+            return False
+        genai.configure(api_key=api_key)
+        _GEMINI_CONFIGURADO = True
+        logging.info("API do Gemini configurada com sucesso. Tudo nos conformes!")
+        return True
+    except Exception as e:
+        msg = f"Deu ruim ao configurar a API do Gemini: {e}"
+        if obrigatorio:
+            logging.error(msg)
+            sys.exit(1)
+        logging.warning(msg)
+        return False
 
 
 # --- 2. Prompt de Comando da IA ---
@@ -569,18 +615,56 @@ def gerar_json_para_ia(df):
     return df.to_json(orient="records", force_ascii=False, indent=2)
 
 
-def gemini_fx(dados_json):
+def _extrair_texto_resposta_gemini(result):
+    """Extrai texto bruto de result.text ou dos parts da primeira candidate com segurança."""
+    texto = ""
+    finish_reason = "desconhecido"
     try:
-        logging.info("Iniciando a análise braba com o modelo Gemini...")
+        candidates = getattr(result, "candidates", None) or []
+        if candidates:
+            finish_reason = str(getattr(candidates[0], "finish_reason", "desconhecido"))
+            content = getattr(candidates[0], "content", None)
+            parts = getattr(content, "parts", None) or []
+            partes_txt = [str(getattr(p, "text", "") or "") for p in parts if getattr(p, "text", None)]
+            if partes_txt:
+                texto = "".join(partes_txt)
+    except Exception:
+        pass
+
+    if not texto:
+        try:
+            texto = str(getattr(result, "text", "") or "")
+        except Exception as exc:
+            logging.warning(f"Não foi possível ler result.text do Gemini (finish_reason={finish_reason}): {exc}")
+            texto = ""
+
+    return texto, finish_reason
+
+
+def gemini_fx(dados_json):
+    if not configurar_gemini(obrigatorio=False):
+        return json.dumps(
+            {"erro": "A análise da IA falhou", "motivo": "Gemini SDK ou GEMINI_API_KEY indisponível"},
+            ensure_ascii=False,
+        )
+
+    model_name = os.getenv("GEMINI_MODEL", "gemini-4-hydrogen")
+    try:
+        logging.info(f"Iniciando a análise braba com o modelo Gemini ({model_name})...")
         model = genai.GenerativeModel(
-            model_name="gemini-4-hydrogen",
+            model_name=model_name,
             system_instruction=ALPHA_PROFIT_SYSTEM_PROMPT,
             generation_config={
                 "response_mime_type": "application/json",
-                "temperature": 0.65
+                "temperature": 0.65,
+                "max_output_tokens": 8192,
             }
         )
-        prompt_usuario = f"Analise o catálogo abaixo e retorne EXATAMENTE 20 Oportunidades de Ouro (15 do Mercado Livre e 5 da Magalu), priorizando variedade de produtos e categorias, seguindo as regras do sistema:\n\n{dados_json}"
+        prompt_usuario = (
+            "Analise o catálogo abaixo e retorne EXATAMENTE 20 Oportunidades de Ouro "
+            "(15 do Mercado Livre e 5 da Magalu), priorizando variedade de produtos e categorias, "
+            f"seguindo as regras do sistema:\n\n{dados_json}"
+        )
         result = model.generate_content(
             prompt_usuario,
             safety_settings={
@@ -588,11 +672,267 @@ def gemini_fx(dados_json):
                 "HARM_CATEGORY_HATE_SPEECH": "block_none", "HARM_CATEGORY_DANGEROUS_CONTENT": "block_none",
             },
         )
-        logging.info("Análise concluída com sucesso!")
-        return result.text 
+        texto, finish_reason = _extrair_texto_resposta_gemini(result)
+        logging.info(
+            f"Análise concluída com sucesso! finish_reason={finish_reason} | chars={len(texto)}"
+        )
+        return texto
     except Exception as e:
         logging.error(f"Putz, a IA falhou: {e}")
-        return f'{{"erro": "A análise da IA falhou", "motivo": "{e}"}}'
+        return json.dumps({"erro": "A análise da IA falhou", "motivo": str(e)}, ensure_ascii=False)
+
+
+def _limpar_fences_json(texto):
+    """Remove blocos markdown ```json ... ``` ou texto introdutório ao redor do JSON."""
+    limpo = str(texto or "").strip()
+    if limpo.startswith("```"):
+        limpo = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", limpo)
+        limpo = re.sub(r"\s*```$", "", limpo).strip()
+    return limpo
+
+
+def _recuperar_objetos_json_parciais(texto):
+    """
+    Caso o JSON venha truncado no fim (ex: MAX_TOKENS), resgata todos os objetos
+    de oportunidade completos já fechados na resposta.
+    """
+    recuperados = []
+    decoder = json.JSONDecoder()
+    idx = 0
+    n = len(texto)
+    while idx < n:
+        pos = texto.find("{", idx)
+        if pos == -1:
+            break
+        try:
+            obj, end = decoder.raw_decode(texto, pos)
+            if isinstance(obj, dict) and (
+                obj.get("sku_selecionado") or obj.get("nome_produto")
+            ):
+                recuperados.append(obj)
+                idx = end
+                continue
+        except json.JSONDecodeError:
+            pass
+        idx = pos + 1
+    return recuperados
+
+
+def _extrair_lista_oportunidades_de_estrutura(parsed):
+    """Normaliza dict/list retornado pelo Gemini para uma lista limpa de dicts de oportunidade."""
+    candidatos = []
+    if isinstance(parsed, list):
+        candidatos = parsed
+    elif isinstance(parsed, dict):
+        chaves_preferidas = (
+            "oportunidades",
+            "oportunidades_de_ouro",
+            "ofertas",
+            "produtos",
+            "items",
+            "selecao",
+        )
+        for chave in chaves_preferidas:
+            val = parsed.get(chave)
+            if isinstance(val, list):
+                candidatos = val
+                break
+        if not candidatos:
+            for val in parsed.values():
+                if isinstance(val, list) and any(isinstance(x, dict) for x in val):
+                    candidatos = val
+                    break
+
+    return [
+        op for op in candidatos
+        if isinstance(op, dict) and (
+            op.get("nome_produto") or op.get("sku_selecionado") or op.get("url_afiliado")
+        )
+    ]
+
+
+def _converter_candidatas_para_lista(candidatas):
+    """Aceita pandas.DataFrame ou list[dict] e devolve lista de dicts normalizada."""
+    if candidatas is None:
+        return []
+    if hasattr(candidatas, "to_dict"):
+        if getattr(candidatas, "empty", False):
+            return []
+        return candidatas.to_dict(orient="records")
+    if isinstance(candidatas, list):
+        return [dict(item) for item in candidatas if isinstance(item, dict)]
+    return []
+
+
+def gerar_oportunidades_fallback(candidatas, qtd_ml=15, qtd_magalu=5):
+    """
+    Gera seleção determinística (15 ML + 5 Magalu) a partir das candidatas ranqueadas
+    caso o Gemini falhe, retorne JSON truncado ou lista vazia — evita perda silenciosa dos canais.
+    """
+    itens = _converter_candidatas_para_lista(candidatas)
+    if not itens:
+        return []
+
+    def _chave_rank(row):
+        if "score_qualidade" in row and row["score_qualidade"] is not None:
+            try:
+                return float(row["score_qualidade"])
+            except (TypeError, ValueError):
+                pass
+        return calcular_score_qualidade_item(
+            menor_preco_historico=row.get("menor_preco_historico", False),
+            queda_real_percent=row.get("queda_real_percent", 0.0),
+            percentual_desconto=row.get("percentual_desconto", 0.0),
+            lucro_estimado_reais=row.get("lucro_estimado_reais", 0.0),
+            preco_atual=row.get("preco_atual", 0.0),
+        )
+
+    ordenados = sorted(itens, key=_chave_rank, reverse=True)
+    ml_itens = [x for x in ordenados if "mercado" in str(x.get("loja", "")).lower()]
+    mg_itens = [x for x in ordenados if "magalu" in str(x.get("loja", "")).lower()]
+
+    sel_ml = ml_itens[:qtd_ml]
+    sel_mg = mg_itens[:qtd_magalu]
+
+    total_alvo = qtd_ml + qtd_magalu
+    if len(sel_ml) + len(sel_mg) < total_alvo:
+        usados = {str(x.get("sku", "")) for x in sel_ml + sel_mg}
+        sobras = [x for x in ordenados if str(x.get("sku", "")) not in usados]
+        faltam = total_alvo - (len(sel_ml) + len(sel_mg))
+        for item in sobras[:faltam]:
+            if "magalu" in str(item.get("loja", "")).lower():
+                sel_mg.append(item)
+            else:
+                sel_ml.append(item)
+
+    # Intercala ML e Magalu (3 ML + 1 Magalu quando possível)
+    intercalados = []
+    i_ml, i_mg = 0, 0
+    while i_ml < len(sel_ml) or i_mg < len(sel_mg):
+        for _ in range(3):
+            if i_ml < len(sel_ml):
+                intercalados.append(sel_ml[i_ml])
+                i_ml += 1
+        if i_mg < len(sel_mg):
+            intercalados.append(sel_mg[i_mg])
+            i_mg += 1
+
+    resultado = []
+    for row in intercalados[:total_alvo]:
+        nome = str(row.get("nome_produto") or "Oferta Selecionada").strip()
+        preco = float(row.get("preco_atual", 0.0) or 0.0)
+        desc = float(row.get("percentual_desconto", 0.0) or 0.0)
+        loja = str(row.get("loja") or storage_db.inferir_loja_por_sku(row.get("sku", ""))).strip()
+        is_min = bool(row.get("menor_preco_historico", False))
+        queda = float(row.get("queda_real_percent", 0.0) or 0.0)
+
+        titulo = (nome[:47] + "...") if len(nome) > 50 else nome
+        if is_min:
+            corpo = f"Atingiu o menor preço registrado em 180 dias ({queda:.0f}% abaixo da mediana recente)."
+        elif desc >= 10:
+            corpo = f"Baixou para R$ {preco:.2f} com {desc:.0f}% de desconto verificado na vitrine."
+        else:
+            corpo = f"Oportunidade selecionada por preço competitivo em {loja} por R$ {preco:.2f}."
+        cta = f"Garanta com {desc:.0f}% OFF agora!" if desc >= 5 else "Confira os detalhes antes que acabe!"
+
+        resultado.append({
+            "sku_selecionado": str(row.get("sku", "")),
+            "nome_produto": nome,
+            "loja": loja,
+            "categoria": row.get("categoria", "Geral"),
+            "preco_atual": preco,
+            "preco_antigo": float(row.get("preco_antigo", preco) or preco),
+            "percentual_desconto": desc,
+            "comissao_percent": row.get("comissao_percent"),
+            "lucro_estimado_reais": row.get("lucro_estimado_reais"),
+            "imagem_url": row.get("imagem_url"),
+            "url_afiliado": row.get("url_afiliado", ""),
+            "menor_preco_historico": is_min,
+            "queda_real_percent": queda,
+            "preco_medio_historico": float(row.get("preco_medio_historico", 0.0) or 0.0),
+            "razao_selecao": "Seleção automática pelo ranking Alpha-Profit (fallback determinístico).",
+            "copy_venda": {
+                "titulo": titulo,
+                "corpo": corpo,
+                "cta": cta,
+            },
+        })
+    return resultado
+
+
+def parsear_resposta_gemini(raw_text, candidatas_fallback=None, qtd_ml=15, qtd_magalu=5):
+    """
+    Faz parsing tolerante da resposta do Gemini com log explícito de falhas (incluindo snippet bruto)
+    e ativa fallback determinístico sobre candidatas ranqueadas se o retorno vier inválido ou vazio.
+    """
+    raw_str = str(raw_text or "")
+    limpo = _limpar_fences_json(raw_str)
+    parsed = None
+    erro_parse = None
+
+    if limpo:
+        try:
+            parsed = json.loads(limpo)
+        except json.JSONDecodeError as e1:
+            erro_parse = str(e1)
+            # Tenta isolar objeto/array externo caso haja texto antes/depois do JSON
+            ini_obj = limpo.find("{")
+            fim_obj = limpo.rfind("}")
+            ini_arr = limpo.find("[")
+            fim_arr = limpo.rfind("]")
+            trechos = []
+            if ini_obj != -1 and fim_obj > ini_obj:
+                trechos.append(limpo[ini_obj:fim_obj + 1])
+            if ini_arr != -1 and fim_arr > ini_arr:
+                trechos.append(limpo[ini_arr:fim_arr + 1])
+            for trecho in trechos:
+                try:
+                    parsed = json.loads(trecho)
+                    erro_parse = None
+                    break
+                except json.JSONDecodeError:
+                    continue
+    else:
+        erro_parse = "resposta_vazia"
+
+    oportunidades = _extrair_lista_oportunidades_de_estrutura(parsed) if parsed is not None else []
+    origem = "gemini"
+
+    if not oportunidades and limpo:
+        parciais = _recuperar_objetos_json_parciais(limpo)
+        if parciais:
+            oportunidades = parciais
+            origem = "gemini_parcial"
+            logging.warning(
+                f"⚠️ JSON do Gemini veio incompleto ({erro_parse}), mas {len(parciais)} ofertas "
+                f"válidas foram resgatadas do retorno (chars={len(raw_str)})."
+            )
+
+    if oportunidades:
+        logging.info(f"🧠 Parser Gemini OK ({origem}): {len(oportunidades)} oportunidades carregadas.")
+        return {"oportunidades": oportunidades, "_origem": origem}
+
+    motivo_erro = erro_parse or (
+        parsed.get("motivo") or parsed.get("erro") if isinstance(parsed, dict) else "lista_oportunidades_vazia"
+    )
+    snippet_inicio = raw_str[:400].replace("\n", " ")
+    snippet_fim = raw_str[-250:].replace("\n", " ") if len(raw_str) > 400 else ""
+    logging.warning(
+        f"⚠️ Parser Gemini sem oportunidades válidas! motivo='{motivo_erro}' | chars={len(raw_str)} | "
+        f"inicio='{snippet_inicio}'" + (f" | fim='{snippet_fim}'" if snippet_fim else "")
+    )
+
+    fallback_ops = gerar_oportunidades_fallback(
+        candidatas_fallback, qtd_ml=qtd_ml, qtd_magalu=qtd_magalu
+    )
+    if fallback_ops:
+        logging.warning(
+            f"🛡️ Fallback determinístico ativado: {len(fallback_ops)} ofertas selecionadas pelo ranking "
+            "para não perder a rodada dos canais!"
+        )
+        return {"oportunidades": fallback_ops, "_origem": "fallback_deterministico"}
+
+    return {"oportunidades": [], "_origem": "vazio"}
 
 
 def formatar_oportunidades_html(oportunidades_dict):
@@ -1794,167 +2134,277 @@ def disparar_facebook_reels_stories(oportunidades_dict, df_todos_produtos=None, 
     return reels_ok, stories_ok
 
 
-# --- 3.5. Controle de Histórico Anti-Repetição (72 horas) ---
-
-HISTORICO_ARQUIVO = "historico_postados.json"
+# --- 3.5. Controle de Histórico Anti-Repetição (72 horas via SQLite) ---
 
 
-def carregar_historico_postados(horas_validade=72):
-    """Carrega SKUs postados recentemente e expira automaticamente os mais antigos que horas_validade."""
-    if not os.path.exists(HISTORICO_ARQUIVO):
-        return {}
+def carregar_historico_postados(horas_validade=72, db_path=storage_db.DEFAULT_DB_PATH, conn=None):
+    """Carrega SKUs postados recentemente direto do SQLite dentro da janela de horas_validade."""
+    fechar_conn = conn is None
+    if conn is None:
+        conn = storage_db.conectar_db(db_path)
+        storage_db.inicializar_db(conn)
     try:
-        with open(HISTORICO_ARQUIVO, "r", encoding="utf-8") as f:
-            dados = json.load(f)
-        limite = datetime.now() - timedelta(hours=horas_validade)
-        ativo = {}
-        for sku, ts_str in dados.items():
-            try:
-                if datetime.fromisoformat(ts_str) > limite:
-                    ativo[sku] = ts_str
-            except Exception:
-                continue
-        logging.info(f"Histórico anti-repetição carregado: {len(ativo)} ofertas bloqueadas nas últimas {horas_validade}h.")
+        ativo = storage_db.carregar_skus_postados_recentes(conn, horas_validade=horas_validade)
+        logging.info(f"Histórico anti-repetição (SQLite) carregado: {len(ativo)} ofertas bloqueadas nas últimas {horas_validade}h.")
         return ativo
     except Exception as e:
-        logging.warning(f"Não foi possível ler {HISTORICO_ARQUIVO}: {e}")
+        logging.warning(f"Não foi possível carregar histórico anti-repetição do SQLite: {e}")
         return {}
+    finally:
+        if fechar_conn and conn is not None:
+            conn.close()
 
 
-def salvar_historico_postados(historico_atual, novos_skus):
-    """Adiciona os SKUs recém-postados ao histórico local (persistido via cache no GitHub Actions)."""
-    agora = datetime.now().isoformat()
+def salvar_historico_postados(
+    novos_skus,
+    df_todos_produtos=None,
+    db_path=storage_db.DEFAULT_DB_PATH,
+    conn=None,
+    canal_resumo="telegram",
+):
+    """Registra os SKUs recém-postados na tabela historico_postados do SQLite."""
+    if not novos_skus:
+        return 0
+
+    mapa_info = {}
+    for row in _converter_candidatas_para_lista(df_todos_produtos):
+        sku_row = str(row.get("sku", "") or "").strip()
+        if sku_row:
+            mapa_info[sku_row] = {
+                "loja": row.get("loja"),
+                "preco": row.get("preco_atual"),
+            }
+
+    agora_iso = datetime.now().isoformat()
+    itens = []
     for sku in novos_skus:
-        if sku:
-            historico_atual[str(sku)] = agora
+        sku_str = str(sku or "").strip()
+        if not sku_str:
+            continue
+        info = mapa_info.get(sku_str, {})
+        itens.append({
+            "sku": sku_str,
+            "loja": info.get("loja") or storage_db.inferir_loja_por_sku(sku_str),
+            "preco_postado": info.get("preco"),
+            "canal_resumo": canal_resumo,
+            "postado_em": agora_iso,
+        })
+
+    fechar_conn = conn is None
+    if conn is None:
+        conn = storage_db.conectar_db(db_path)
+        storage_db.inicializar_db(conn)
     try:
-        with open(HISTORICO_ARQUIVO, "w", encoding="utf-8") as f:
-            json.dump(historico_atual, f, ensure_ascii=False, indent=2)
-        logging.info(f"Histórico atualizado: {len(novos_skus)} novas ofertas registradas ({len(historico_atual)} no total).")
+        gravados = storage_db.registrar_postagens_lote(conn, itens)
+        logging.info(f"Histórico anti-repetição (SQLite) atualizado: {gravados} ofertas registradas.")
+        return gravados
     except Exception as e:
-        logging.warning(f"Erro ao salvar {HISTORICO_ARQUIVO}: {e}")
+        logging.warning(f"Erro ao salvar histórico anti-repetição no SQLite: {e}")
+        return 0
+    finally:
+        if fechar_conn and conn is not None:
+            conn.close()
 
 
-# --- 3.6. Radar de Queda Real de Preço (Histórico 30 dias — Modo Híbrido) ---
+def aplicar_filtro_anti_repeticao_72h(produtos, historico_postados, minimo_ineditos=25):
+    """
+    Remove produtos já postados nas últimas 72h apenas se restarem >= minimo_ineditos itens;
+    caso contrário, preserva o catálogo completo com rotação por jitter.
+    """
+    if not historico_postados:
+        return produtos
 
-HISTORICO_PRECOS_ARQUIVO = "historico_precos.json"
+    bloqueados = set(str(k) for k in historico_postados.keys())
+    if hasattr(produtos, "empty"):
+        if produtos.empty:
+            return produtos
+        total_bruto = len(produtos)
+        df_ineditos = produtos[~produtos["sku"].astype(str).isin(bloqueados)]
+        if len(df_ineditos) >= int(minimo_ineditos):
+            logging.info(
+                f"Filtro anti-repetição aplicado: {total_bruto - len(df_ineditos)} ofertas recentes ignoradas. "
+                f"Restaram {len(df_ineditos)} inéditas!"
+            )
+            return df_ineditos.copy()
+        logging.info(
+            f"Poucos produtos inéditos nesta rodada ({len(df_ineditos)} < {minimo_ineditos}); "
+            "mantendo catálogo completo com rotação por jitter."
+        )
+        return produtos
+
+    lista = list(produtos or [])
+    ineditos = [p for p in lista if str(p.get("sku", "")) not in bloqueados]
+    if len(ineditos) >= int(minimo_ineditos):
+        logging.info(
+            f"Filtro anti-repetição aplicado: {len(lista) - len(ineditos)} ofertas recentes ignoradas. "
+            f"Restaram {len(ineditos)} inéditas!"
+        )
+        return ineditos
+    logging.info(
+        f"Poucos produtos inéditos nesta rodada ({len(ineditos)} < {minimo_ineditos}); "
+        "mantendo catálogo completo com rotação por jitter."
+    )
+    return lista
 
 
-def carregar_historico_precos(dias_validade=30):
-    """Carrega o histórico de preços dos últimos 30 dias (mínima e média real por SKU)."""
-    if not os.path.exists(HISTORICO_PRECOS_ARQUIVO):
-        return {}
+def calcular_score_qualidade_item(
+    menor_preco_historico,
+    queda_real_percent,
+    percentual_desconto,
+    lucro_estimado_reais,
+    preco_atual,
+    jitter_val=0.0,
+):
+    """Calcula score composto ponderando Radar 180d + Desconto + Lucro em R$ + Sweet Spot."""
     try:
-        with open(HISTORICO_PRECOS_ARQUIVO, "r", encoding="utf-8") as f:
-            dados = json.load(f)
-        limite = (datetime.now() - timedelta(days=dias_validade)).strftime("%Y-%m-%d")
-        ativo = {
-            sku: info for sku, info in dados.items()
-            if isinstance(info, dict) and str(info.get("updated", "")) >= limite
-        }
-        logging.info(f"📉 Radar de Preços carregado: {len(ativo)} SKUs monitorados nos últimos {dias_validade} dias.")
-        return ativo
-    except Exception as e:
-        logging.warning(f"Não foi possível ler {HISTORICO_PRECOS_ARQUIVO}: {e}")
-        return {}
+        preco_f = float(preco_atual or 0.0)
+    except (TypeError, ValueError):
+        preco_f = 0.0
+    sweet = 25.0 if 35.0 <= preco_f <= 500.0 else 0.0
+    return (
+        (int(bool(menor_preco_historico)) * 45.0)
+        + (min(float(queda_real_percent or 0.0), 40.0) * 1.5)
+        + (float(percentual_desconto or 0.0) * 0.35)
+        + (min(float(lucro_estimado_reais or 0.0), 80.0) * 0.40)
+        + sweet
+        + float(jitter_val or 0.0)
+    )
 
 
-def enriquecer_e_atualizar_historico_precos(df_produtos, historico_precos):
+# --- 3.6. Radar de Queda Real de Preço (Histórico 180 dias via SQLite + Regra Anti-"Metade do Dobro") ---
+
+
+def enriquecer_e_atualizar_historico_precos(
+    produtos,
+    conn=None,
+    db_path=storage_db.DEFAULT_DB_PATH,
+    dias=180,
+    data_coleta=None,
+):
     """
-    Modo Híbrido: compara o preço de hoje com o histórico real de cada SKU (sem reduzir volume),
-    marcando quedas reais e mínimas históricas, e atualiza historico_precos.json.
+    Modo Híbrido 180d via SQLite:
+      1) Consulta min_180d, mediana_180d e dias_observados ANTES de gravar a rodada atual
+         (nunca compara o SKU com o próprio preço da rodada).
+      2) Usa mediana_180d em preco_medio_historico e queda_real_percent (proteção contra picos artificiais).
+      3) Só ativa menor_preco_historico=True quando dias_observados >= 5 E preco_atual < min_180d.
+      4) Grava os preços da rodada em lote no SQLite após concluir todas as leituras.
     """
-    hoje = datetime.now().strftime("%Y-%m-%d")
+    hoje = str(data_coleta or datetime.now().strftime("%Y-%m-%d"))[:10]
+    agora_iso = datetime.now().isoformat()
+
+    is_df = hasattr(produtos, "iterrows")
+    if is_df and produtos.empty:
+        produtos["queda_real_percent"] = []
+        produtos["menor_preco_historico"] = []
+        produtos["preco_medio_historico"] = []
+        return produtos
+
+    linhas = _converter_candidatas_para_lista(produtos) if is_df else list(produtos or [])
+    if not linhas:
+        return produtos
+
+    fechar_conn = conn is None
+    if conn is None:
+        conn = storage_db.conectar_db(db_path)
+        storage_db.inicializar_db(conn)
+
     quedas_reais = []
     minimas_hist = []
     medias_hist = []
+    registros_para_gravar = []
 
     qtd_minimas = 0
     qtd_quedas = 0
 
-    for _, row in df_produtos.iterrows():
-        sku = str(row.get("sku", "")).strip()
-        preco = float(row.get("preco_atual", 0.0) or 0.0)
-        queda_pct = 0.0
-        is_minima = False
-        media_ant = 0.0
+    try:
+        # FASE A: Leitura integral do histórico anterior ANTES de escrever qualquer preço da rodada
+        for row in linhas:
+            sku = str(row.get("sku", "") or "").strip()
+            loja = str(row.get("loja") or storage_db.inferir_loja_por_sku(sku)).strip()
+            try:
+                preco = round(float(row.get("preco_atual", 0.0) or 0.0), 2)
+            except (TypeError, ValueError):
+                preco = 0.0
 
-        if sku and preco > 0:
-            reg = historico_precos.get(sku)
-            if reg and reg.get("count", 0) >= 2:
-                avg_ant = float(reg.get("avg", preco) or preco)
-                min_ant = float(reg.get("min", preco) or preco)
-                media_ant = round(avg_ant, 2)
-                if avg_ant > preco:
-                    queda_pct = round(((avg_ant - preco) / avg_ant) * 100.0, 1)
-                if preco <= min_ant * 0.99 and queda_pct >= 5.0:
+            queda_pct = 0.0
+            is_minima = False
+            mediana_ref = 0.0
+
+            if sku and preco > 0:
+                stats = storage_db.obter_estatisticas_sku(
+                    conn,
+                    sku=sku,
+                    loja=loja,
+                    dias=dias,
+                    data_referencia=hoje,
+                    excluir_data=hoje,
+                )
+                dias_obs = int(stats.get("dias_observados", 0) or 0)
+                min_180d = stats.get("min_180d")
+                mediana_180d = stats.get("mediana_180d")
+
+                if mediana_180d is not None and float(mediana_180d) > 0:
+                    mediana_ref = round(float(mediana_180d), 2)
+                    if mediana_ref > preco:
+                        queda_pct = round(((mediana_ref - preco) / mediana_ref) * 100.0, 1)
+
+                # Trava anti-"metade do dobro" + warm-up: exige >= 5 dias anteriores e estar estritamente abaixo da mínima
+                if dias_obs >= 5 and min_180d is not None and preco < float(min_180d):
                     is_minima = True
                     qtd_minimas += 1
+
                 if queda_pct >= 5.0:
                     qtd_quedas += 1
 
-                # Atualiza histórico com média incremental (peso suavizado até 30 amostras)
-                cnt = min(int(reg.get("count", 1)) + 1, 30)
-                novo_avg = round(((avg_ant * (cnt - 1)) + preco) / cnt, 2)
-                historico_precos[sku] = {
-                    "min": round(min(min_ant, preco), 2),
-                    "avg": novo_avg,
-                    "count": cnt,
-                    "last": round(preco, 2),
-                    "updated": hoje,
-                }
-            elif reg:
-                avg_ant = float(reg.get("avg", preco) or preco)
-                min_ant = float(reg.get("min", preco) or preco)
-                historico_precos[sku] = {
-                    "min": round(min(min_ant, preco), 2),
-                    "avg": round((avg_ant + preco) / 2.0, 2),
-                    "count": int(reg.get("count", 1)) + 1,
-                    "last": round(preco, 2),
-                    "updated": hoje,
-                }
-            else:
-                historico_precos[sku] = {
-                    "min": round(preco, 2),
-                    "avg": round(preco, 2),
-                    "count": 1,
-                    "last": round(preco, 2),
-                    "updated": hoje,
-                }
+                registros_para_gravar.append({
+                    "sku": sku,
+                    "loja": loja,
+                    "preco": preco,
+                    "data_coleta": hoje,
+                    "titulo": str(row.get("nome_produto", "") or "").strip(),
+                    "categoria": str(row.get("categoria", "") or "").strip(),
+                    "atualizado_em": agora_iso,
+                })
 
-        quedas_reais.append(queda_pct)
-        minimas_hist.append(is_minima)
-        medias_hist.append(media_ant)
+            quedas_reais.append(queda_pct)
+            minimas_hist.append(is_minima)
+            medias_hist.append(mediana_ref)
 
-    df_produtos["queda_real_percent"] = quedas_reais
-    df_produtos["menor_preco_historico"] = minimas_hist
-    df_produtos["preco_medio_historico"] = medias_hist
-
-    # Mantém no máximo 5.000 SKUs mais recentes para o cache ficar leve
-    if len(historico_precos) > 5000:
-        ordenados = sorted(historico_precos.items(), key=lambda kv: kv[1].get("updated", ""), reverse=True)[:5000]
-        historico_precos = dict(ordenados)
-
-    try:
-        with open(HISTORICO_PRECOS_ARQUIVO, "w", encoding="utf-8") as f:
-            json.dump(historico_precos, f, ensure_ascii=False)
+        # FASE B: Gravação em lote somente depois de todas as consultas de comparação
+        gravados = storage_db.registrar_precos_lote(conn, registros_para_gravar)
         logging.info(
-            f"📉 Radar de Preços atualizado ({len(historico_precos)} SKUs). "
-            f"Nesta rodada: {qtd_minimas} mínimas históricas e {qtd_quedas} quedas reais (>=5%)!"
+            f"📉 Radar de Preços 180d (SQLite) atualizado ({gravados} preços gravados hoje). "
+            f"Nesta rodada: {qtd_minimas} mínimas históricas (warm-up >=5d) e {qtd_quedas} quedas >=5% vs mediana!"
         )
-    except Exception as e:
-        logging.warning(f"Erro ao salvar {HISTORICO_PRECOS_ARQUIVO}: {e}")
+    finally:
+        if fechar_conn and conn is not None:
+            conn.close()
 
-    return df_produtos
+    if is_df:
+        produtos = produtos.copy()
+        produtos["queda_real_percent"] = quedas_reais
+        produtos["menor_preco_historico"] = minimas_hist
+        produtos["preco_medio_historico"] = medias_hist
+        return produtos
+
+    for row, q, m, med in zip(linhas, quedas_reais, minimas_hist, medias_hist):
+        row["queda_real_percent"] = q
+        row["menor_preco_historico"] = m
+        row["preco_medio_historico"] = med
+    return linhas
 
 
 def enriquecer_oportunidades_com_radar(oportunidades_dict, df_produtos):
     """Propaga os sinais do Radar de Queda Real para o JSON retornado pela IA."""
-    if not oportunidades_dict or "oportunidades" not in oportunidades_dict or df_produtos is None or df_produtos.empty:
+    if not oportunidades_dict or "oportunidades" not in oportunidades_dict:
+        return oportunidades_dict
+
+    lista_produtos = _converter_candidatas_para_lista(df_produtos)
+    if not lista_produtos:
         return oportunidades_dict
 
     mapa_sku, mapa_url, mapa_nome = {}, {}, {}
-    for _, row in df_produtos.iterrows():
+    for row in lista_produtos:
         info = {
             "menor_preco_historico": bool(row.get("menor_preco_historico", False)),
             "queda_real_percent": float(row.get("queda_real_percent", 0.0) or 0.0),
@@ -1984,248 +2434,263 @@ def enriquecer_oportunidades_com_radar(oportunidades_dict, df_produtos):
 # --- 4. O Maestro da Orquestra (Bloco Principal Modificado) ---
 
 if __name__ == "__main__":
+    configurar_gemini(obrigatorio=True)
 
-    # Carrega histórico das últimas 72h (anti-repetição) e histórico de 30 dias (Radar de Preços)
-    historico_postados = carregar_historico_postados(horas_validade=72)
-    historico_precos = carregar_historico_precos(dias_validade=30)
-
-    POOL_MAGALU = [
-        "https://www.magazinevoce.com.br/magazinedealz/informatica/l/in/",
-        "https://www.magazinevoce.com.br/magazinedealz/games/l/ga/",
-        "https://www.magazinevoce.com.br/magazinedealz/casa-inteligente/l/ci/",
-        "https://www.magazinevoce.com.br/magazinedealz/celulares-e-smartphones/l/te/",
-        "https://www.magazinevoce.com.br/magazinedealz/audio/l/ea/",
-    ]
-    # Sorteia 3 categorias da Magalu por execução para variar o catálogo
-    URLS_BASE_MAGALU = random.sample(POOL_MAGALU, k=3)
-
-    URL_ML_SOCIAL = (
-        "https://www.mercadolivre.com.br/social/rafaelmelo825"
-        "?matt_word=rafaelmelo825&matt_tool=61727000&forceInApp=true"
-        "&ref=BNMjcwPk80fK3V%2FaZkPyOPSUZvCKY1lXkz7gVn1Lk0heRiFWKmz5M4HRd6c6Lzr"
-        "%2FuAj586dkXZ2W8cbQV1wKa2LpVSemU7GsCrR5Mv0Ou4hXSI4eC47TaGOR2DuPSqEh81"
-        "ti8ZXhLB0DAdcCStEU8%2B3IwqjwS6GC2byelKta%2BPLZ9yC8%2FTUySd5A%2ByhIJJQo"
-        "9Gt9NvwD9Dle76xPtnsfM9P9NL%2Fj%2BQiaJVXOUEol2buRlVN5bpKt092dM8jij639Z3JOHg%3D%3D"
-    )
-
-    # Pool diversificado de buscas e subcategorias no Mercado Livre (rotação a cada disparo)
-    POOL_ML = [
-        ("https://lista.mercadolivre.com.br/games", "Games"),
-        ("https://lista.mercadolivre.com.br/controle-sem-fio-gamer", "Games"),
-        ("https://lista.mercadolivre.com.br/headset-gamer", "Games"),
-        ("https://lista.mercadolivre.com.br/jogos-ps5-xbox-nintendo", "Games"),
-        ("https://lista.mercadolivre.com.br/informatica", "Informática"),
-        ("https://lista.mercadolivre.com.br/ssd-nvme", "Informática"),
-        ("https://lista.mercadolivre.com.br/mouse-gamer", "Informática"),
-        ("https://lista.mercadolivre.com.br/teclado-mecanico", "Informática"),
-        ("https://lista.mercadolivre.com.br/monitor-gamer", "Informática"),
-        ("https://lista.mercadolivre.com.br/celulares-telefones", "Celulares"),
-        ("https://lista.mercadolivre.com.br/smartwatch", "Celulares"),
-        ("https://lista.mercadolivre.com.br/eletronicos-audio-video", "Áudio & Geek"),
-        ("https://lista.mercadolivre.com.br/fone-bluetooth-tws", "Áudio & Geek"),
-        ("https://lista.mercadolivre.com.br/caixa-de-som-bluetooth", "Áudio & Geek"),
-        ("https://lista.mercadolivre.com.br/casa-inteligente", "Casa Inteligente"),
-        ("https://lista.mercadolivre.com.br/alexa-echo-dot", "Casa Inteligente"),
-        ("https://lista.mercadolivre.com.br/fita-led-rgb-wifi", "Casa Inteligente"),
-    ]
-    # Sorteia 7 frentes diferentes do ML a cada execução para minerar novidades sempre
-    CATEGORIAS_ML = random.sample(POOL_ML, k=7)
-
-    all_dfs = []  
-    logging.info("🚀 Iniciando motor Multi-Plataforma: Magalu + Mercado Livre...")
-
-    # --- 1. RASPAGEM DA MAGAZINE LUIZA ---
-    logging.info("--- Vasculhando vitrines da Magazine Luiza ---")
-    for url_base in URLS_BASE_MAGALU:
-        logging.info(f"Vasculhando vitrine Magalu: {url_base}")
-        # Começa em página 1 ou sorteia uma janela de páginas (ex: 1..4 ou 2..5) para variar
-        pagina_inicial = random.choice([1, 1, 2, 3])
-        for pagina in range(pagina_inicial, pagina_inicial + 4):
-            url_paginada = f"{url_base}?page={pagina}"
-            logging.info(f"Magalu: Buscando página {pagina}...")
-            
-            df_pagina, _ = extrair_dados_magalu_live(url_paginada)
-            
-            if df_pagina is None or df_pagina.empty:
-                logging.info(f"Magalu: Fim dos produtos após a página {pagina-1}.")
-                break
-                
-            all_dfs.append(df_pagina)
-            time.sleep(2)
-
-    # --- 2. RASPAGEM DO MERCADO LIVRE ---
-    logging.info("--- Vasculhando vitrine e ofertas do Mercado Livre ---")
-    
-    # 2.1 Vitrine Social Oficial do Rafael (Games, Mais Vendidos e Super Ofertas)
+    conn_db = storage_db.conectar_db()
     try:
-        logging.info("Mercado Livre: Extraindo produtos da Vitrine Social Oficial...")
-        df_ml_social = extrair_dados_mercadolivre_live(URL_ML_SOCIAL, categoria_padrao="Games & Tech")
-        if df_ml_social is not None and not df_ml_social.empty:
-            logging.info(f"Mercado Livre: {len(df_ml_social)} produtos capturados da sua vitrine social!")
-            all_dfs.append(df_ml_social)
-    except Exception as e:
-        logging.warning(f"Erro ao raspar vitrine social do ML: {e}")
+        storage_db.inicializar_db(conn_db)
+        if (
+            storage_db.contar_linhas_precos(storage_db.DEFAULT_DB_PATH) == 0
+            and (os.path.exists("historico_precos.json") or os.path.exists("historico_postados.json"))
+        ):
+            storage_db.migrar_jsons_legados(conn_db)
 
-    # 2.2 Categorias e Subnichos sorteados nesta rodada (alternando página 1 e página 2)
-    for url_ml, cat_nome in CATEGORIAS_ML:
+        # Carrega histórico das últimas 72h (anti-repetição) direto do SQLite
+        historico_postados = carregar_historico_postados(horas_validade=72, conn=conn_db)
+
+        POOL_MAGALU = [
+            "https://www.magazinevoce.com.br/magazinedealz/informatica/l/in/",
+            "https://www.magazinevoce.com.br/magazinedealz/games/l/ga/",
+            "https://www.magazinevoce.com.br/magazinedealz/casa-inteligente/l/ci/",
+            "https://www.magazinevoce.com.br/magazinedealz/celulares-e-smartphones/l/te/",
+            "https://www.magazinevoce.com.br/magazinedealz/audio/l/ea/",
+        ]
+        # Sorteia 3 categorias da Magalu por execução para variar o catálogo
+        URLS_BASE_MAGALU = random.sample(POOL_MAGALU, k=3)
+
+        URL_ML_SOCIAL = (
+            "https://www.mercadolivre.com.br/social/rafaelmelo825"
+            "?matt_word=rafaelmelo825&matt_tool=61727000&forceInApp=true"
+            "&ref=BNMjcwPk80fK3V%2FaZkPyOPSUZvCKY1lXkz7gVn1Lk0heRiFWKmz5M4HRd6c6Lzr"
+            "%2FuAj586dkXZ2W8cbQV1wKa2LpVSemU7GsCrR5Mv0Ou4hXSI4eC47TaGOR2DuPSqEh81"
+            "ti8ZXhLB0DAdcCStEU8%2B3IwqjwS6GC2byelKta%2BPLZ9yC8%2FTUySd5A%2ByhIJJQo"
+            "9Gt9NvwD9Dle76xPtnsfM9P9NL%2Fj%2BQiaJVXOUEol2buRlVN5bpKt092dM8jij639Z3JOHg%3D%3D"
+        )
+
+        # Pool diversificado de buscas e subcategorias no Mercado Livre (rotação a cada disparo)
+        POOL_ML = [
+            ("https://lista.mercadolivre.com.br/games", "Games"),
+            ("https://lista.mercadolivre.com.br/controle-sem-fio-gamer", "Games"),
+            ("https://lista.mercadolivre.com.br/headset-gamer", "Games"),
+            ("https://lista.mercadolivre.com.br/jogos-ps5-xbox-nintendo", "Games"),
+            ("https://lista.mercadolivre.com.br/informatica", "Informática"),
+            ("https://lista.mercadolivre.com.br/ssd-nvme", "Informática"),
+            ("https://lista.mercadolivre.com.br/mouse-gamer", "Informática"),
+            ("https://lista.mercadolivre.com.br/teclado-mecanico", "Informática"),
+            ("https://lista.mercadolivre.com.br/monitor-gamer", "Informática"),
+            ("https://lista.mercadolivre.com.br/celulares-telefones", "Celulares"),
+            ("https://lista.mercadolivre.com.br/smartwatch", "Celulares"),
+            ("https://lista.mercadolivre.com.br/eletronicos-audio-video", "Áudio & Geek"),
+            ("https://lista.mercadolivre.com.br/fone-bluetooth-tws", "Áudio & Geek"),
+            ("https://lista.mercadolivre.com.br/caixa-de-som-bluetooth", "Áudio & Geek"),
+            ("https://lista.mercadolivre.com.br/casa-inteligente", "Casa Inteligente"),
+            ("https://lista.mercadolivre.com.br/alexa-echo-dot", "Casa Inteligente"),
+            ("https://lista.mercadolivre.com.br/fita-led-rgb-wifi", "Casa Inteligente"),
+        ]
+        # Sorteia 7 frentes diferentes do ML a cada execução para minerar novidades sempre
+        CATEGORIAS_ML = random.sample(POOL_ML, k=7)
+
+        all_dfs = []  
+        logging.info("🚀 Iniciando motor Multi-Plataforma: Magalu + Mercado Livre...")
+
+        # --- 1. RASPAGEM DA MAGAZINE LUIZA ---
+        logging.info("--- Vasculhando vitrines da Magazine Luiza ---")
+        for url_base in URLS_BASE_MAGALU:
+            logging.info(f"Vasculhando vitrine Magalu: {url_base}")
+            pagina_inicial = random.choice([1, 1, 2, 3])
+            for pagina in range(pagina_inicial, pagina_inicial + 4):
+                url_paginada = f"{url_base}?page={pagina}"
+                logging.info(f"Magalu: Buscando página {pagina}...")
+
+                df_pagina, _ = extrair_dados_magalu_live(url_paginada)
+
+                if df_pagina is None or df_pagina.empty:
+                    logging.info(f"Magalu: Fim dos produtos após a página {pagina-1}.")
+                    break
+
+                all_dfs.append(df_pagina)
+                time.sleep(2)
+
+        # --- 2. RASPAGEM DO MERCADO LIVRE ---
+        logging.info("--- Vasculhando vitrine e ofertas do Mercado Livre ---")
+
+        # 2.1 Vitrine Social Oficial do Rafael (Games, Mais Vendidos e Super Ofertas)
         try:
-            # 40% das vezes mergulha na página 2 (_Desde_49) para encontrar achados menos óbvios
-            url_alvo = f"{url_ml}_Desde_49" if random.random() < 0.4 else url_ml
-            logging.info(f"Mercado Livre: Buscando {cat_nome} ({url_alvo})...")
-            df_ml_cat = extrair_dados_mercadolivre_live(url_alvo, categoria_padrao=cat_nome)
-            if df_ml_cat is None or df_ml_cat.empty:
-                # Fallback para página 1 se página 2 vier vazia
-                if url_alvo != url_ml:
-                    df_ml_cat = extrair_dados_mercadolivre_live(url_ml, categoria_padrao=cat_nome)
-            if df_ml_cat is not None and not df_ml_cat.empty:
-                logging.info(f"Mercado Livre [{cat_nome}]: {len(df_ml_cat)} produtos encontrados.")
-                all_dfs.append(df_ml_cat)
-            time.sleep(2)
+            logging.info("Mercado Livre: Extraindo produtos da Vitrine Social Oficial...")
+            df_ml_social = extrair_dados_mercadolivre_live(URL_ML_SOCIAL, categoria_padrao="Games & Tech")
+            if df_ml_social is not None and not df_ml_social.empty:
+                logging.info(f"Mercado Livre: {len(df_ml_social)} produtos capturados da sua vitrine social!")
+                all_dfs.append(df_ml_social)
         except Exception as e:
-            logging.warning(f"Erro ao buscar categoria {cat_nome} do ML: {e}")
+            logging.warning(f"Erro ao raspar vitrine social do ML: {e}")
 
-    # Verifica se pegou produtos no total
-    if not all_dfs:
-        logging.error("Nenhum produto extraído de nenhuma das plataformas. Verifique as conexões.")
-        sys.exit(0)
+        # 2.2 Categorias e Subnichos sorteados nesta rodada (alternando página 1 e página 2)
+        for url_ml, cat_nome in CATEGORIAS_ML:
+            try:
+                url_alvo = f"{url_ml}_Desde_49" if random.random() < 0.4 else url_ml
+                logging.info(f"Mercado Livre: Buscando {cat_nome} ({url_alvo})...")
+                df_ml_cat = extrair_dados_mercadolivre_live(url_alvo, categoria_padrao=cat_nome)
+                if df_ml_cat is None or df_ml_cat.empty:
+                    if url_alvo != url_ml:
+                        df_ml_cat = extrair_dados_mercadolivre_live(url_ml, categoria_padrao=cat_nome)
+                if df_ml_cat is not None and not df_ml_cat.empty:
+                    logging.info(f"Mercado Livre [{cat_nome}]: {len(df_ml_cat)} produtos encontrados.")
+                    all_dfs.append(df_ml_cat)
+                time.sleep(2)
+            except Exception as e:
+                logging.warning(f"Erro ao buscar categoria {cat_nome} do ML: {e}")
 
-    # Junta todas as tabelas e remove duplicatas por SKU
-    df_produtos = pd.concat(all_dfs, ignore_index=True).drop_duplicates(subset=["sku"])
-    total_bruto = len(df_produtos)
+        if not all_dfs:
+            logging.error("Nenhum produto extraído de nenhuma das plataformas. Verifique as conexões.")
+            sys.exit(0)
 
-    # Atualiza o Radar de Queda Real de Preço com TODOS os itens raspados hoje (antes do filtro 72h)
-    df_produtos = enriquecer_e_atualizar_historico_precos(df_produtos, historico_precos)
+        # Junta todas as tabelas e remove duplicatas por SKU
+        df_produtos = pd.concat(all_dfs, ignore_index=True).drop_duplicates(subset=["sku"])
 
-    # Filtra fora produtos já postados nas últimas 72h (Anti-Repetição)
-    if historico_postados:
-        df_ineditos = df_produtos[~df_produtos["sku"].astype(str).isin(historico_postados.keys())]
-        if len(df_ineditos) >= 25:
-            logging.info(f"Filtro anti-repetição aplicado: {total_bruto - len(df_ineditos)} ofertas recentes ignoradas. Restaram {len(df_ineditos)} inéditas!")
-            df_produtos = df_ineditos.copy()
+        # Atualiza o Radar de Queda Real de Preço (180d via SQLite) ANTES do filtro de 72h
+        df_produtos = enriquecer_e_atualizar_historico_precos(df_produtos, conn=conn_db, dias=180)
+
+        # Filtra fora produtos já postados nas últimas 72h (fallback se < 25 inéditos)
+        df_produtos = aplicar_filtro_anti_repeticao_72h(
+            df_produtos, historico_postados, minimo_ineditos=25
+        )
+
+        logging.info(f"SUCESSO TOTAL! {len(df_produtos)} itens elegíveis de Magalu e Mercado Livre!")
+
+        # Prepara o Score ponderando Queda Real (Radar 180d) + Desconto + Lucro em R$ + Sweet Spot + Jitter
+        jitter = [random.uniform(0, 8) for _ in range(len(df_produtos))]
+        df_produtos["score_qualidade"] = (
+            (df_produtos["menor_preco_historico"].astype(int) * 45) +
+            (df_produtos["queda_real_percent"].clip(upper=40) * 1.5) +
+            (df_produtos["percentual_desconto"] * 0.35) +
+            (df_produtos["lucro_estimado_reais"].clip(upper=80) * 0.40) +
+            (df_produtos["preco_atual"].between(35, 500) * 25) +
+            jitter
+        )
+
+        # Prepara o catálogo balanceado para a IA: Top Mercado Livre + Top Magalu
+        df_ml = df_produtos[df_produtos["loja"] == "Mercado Livre"].sort_values(by="score_qualidade", ascending=False).head(80)
+        df_magalu = df_produtos[df_produtos["loja"] == "Magalu"].sort_values(by="score_qualidade", ascending=False).head(40)
+
+        if not df_ml.empty and not df_magalu.empty:
+            df_ordenado_para_ia = pd.concat([df_ml, df_magalu], ignore_index=True)
         else:
-            logging.info("Poucos produtos inéditos nesta rodada; mantendo catálogo completo com rotação por jitter.")
+            df_ordenado_para_ia = df_produtos.sort_values(by="score_qualidade", ascending=False).head(120)
 
-    logging.info(f"SUCESSO TOTAL! {len(df_produtos)} itens elegíveis de Magalu e Mercado Livre!")
-    
-    # Prepara o Score ponderando Queda Real (Radar 30d) + Desconto + Lucro em R$ + Sweet Spot + Jitter
-    jitter = [random.uniform(0, 8) for _ in range(len(df_produtos))]
-    df_produtos["score_qualidade"] = (
-        (df_produtos["menor_preco_historico"].astype(int) * 45) +
-        (df_produtos["queda_real_percent"].clip(upper=40) * 1.5) +
-        (df_produtos["percentual_desconto"] * 0.35) +
-        (df_produtos["lucro_estimado_reais"].clip(upper=80) * 0.40) +
-        (df_produtos["preco_atual"].between(35, 500) * 25) +
-        jitter
-    )
-    
-    # Prepara o catálogo balanceado para a IA: Top Mercado Livre + Top Magalu
-    df_ml = df_produtos[df_produtos["loja"] == "Mercado Livre"].sort_values(by="score_qualidade", ascending=False).head(80)
-    df_magalu = df_produtos[df_produtos["loja"] == "Magalu"].sort_values(by="score_qualidade", ascending=False).head(40)
-    
-    if not df_ml.empty and not df_magalu.empty:
-        df_ordenado_para_ia = pd.concat([df_ml, df_magalu], ignore_index=True)
-    else:
-        df_ordenado_para_ia = df_produtos.sort_values(by="score_qualidade", ascending=False).head(120)
+        logging.info(f"Enviando {len(df_ordenado_para_ia)} candidatos inéditos para a IA escolher as 20 melhores (15 ML + 5 Magalu)...")
+        json_input_data = gerar_json_para_ia(df_ordenado_para_ia.drop(columns=["score_qualidade"]))
 
-    logging.info(f"Enviando {len(df_ordenado_para_ia)} candidatos inéditos para a IA escolher as 20 melhores (15 ML + 5 Magalu)...")
-    json_input_data = gerar_json_para_ia(df_ordenado_para_ia.drop(columns=["score_qualidade"]))
+        logging.info("\n=== CHAMANDO ALPHA-PROFIT (GEMINI) ===")
+        json_final_output = gemini_fx(json_input_data)
 
-    logging.info("\n=== CHAMANDO ALPHA-PROFIT (GEMINI) ===")
-    json_final_output = gemini_fx(json_input_data)
-
-    # Tentamos ler a resposta da IA. Se der erro, 'oportunidades_dict' fica vazio.
-    try:
-        oportunidades_dict = json.loads(json_final_output)
+        # Parsing blindado da resposta do Gemini com fallback determinístico caso falhe
+        oportunidades_dict = parsear_resposta_gemini(
+            json_final_output,
+            candidatas_fallback=df_ordenado_para_ia,
+            qtd_ml=15,
+            qtd_magalu=5,
+        )
         oportunidades_dict = enriquecer_oportunidades_com_radar(oportunidades_dict, df_produtos)
-    except Exception as e:
-        logging.warning(f"Erro ao interpretar JSON da IA. Ativando Contingência. Erro: {e}")
-        oportunidades_dict = {}
 
-    # O envio de e-mail agora é garantido, independentemente da IA funcionar ou não.
-    enviar_email_oportunidades(
-        email_disparo=os.getenv("EMAIL_USER"),
-        senha=os.getenv("EMAIL_PASSWORD"),
-        email_destinatario="rsouza.melo18@gmail.com",
-        oportunidades_dict=oportunidades_dict,
-        df_todos_produtos=df_produtos 
-    )
-
-    # 🚀 DISPARO AUTOMÁTICO NO TELEGRAM (Canal de Ofertas / Grupo VIP)
-    skus_postados = disparar_canal_telegram(
-        bot_token=os.getenv("TELEGRAM_BOT_TOKEN"),
-        chat_id=os.getenv("TELEGRAM_CHAT_ID"),
-        oportunidades_dict=oportunidades_dict,
-        df_todos_produtos=df_produtos,
-        intervalo_segundos=3
-    )
-
-    # 🐦 DISPARO AUTOMÁTICO NO X (Twitter) — Modo Econômico (Top 2 sem URL = ~US$ 0,015/post)
-    posts_x = disparar_x_twitter(
-        oportunidades_dict=oportunidades_dict,
-        df_todos_produtos=df_produtos,
-        max_posts=2,
-        intervalo_segundos=8
-    ) or 0
-
-    # 🧵 DISPARO AUTOMÁTICO NO THREADS (Meta) — 100% Gratuito (Top 5 com link direto + foto/preview)
-    posts_threads = disparar_threads(
-        oportunidades_dict=oportunidades_dict,
-        df_todos_produtos=df_produtos,
-        max_posts=5,
-        intervalo_segundos=6
-    ) or 0
-
-    # 📘 DISPARO AUTOMÁTICO NA PÁGINA DO FACEBOOK — 100% Gratuito (Top 5 foto limpa + link no 1º comentário)
-    posts_facebook = disparar_facebook_page(
-        oportunidades_dict=oportunidades_dict,
-        df_todos_produtos=df_produtos,
-        max_posts=5,
-        intervalo_segundos=6
-    ) or 0
-
-    # 🎬📱 DISPARO AUTOMÁTICO DE REELS (1 MP4) + STORIES (2 Cards 9:16) NA PÁGINA DO FACEBOOK
-    reels_fb, stories_fb = disparar_facebook_reels_stories(
-        oportunidades_dict=oportunidades_dict,
-        df_todos_produtos=df_produtos,
-        max_reels=1,
-        max_stories=2
-    )
-
-    # Atualiza o histórico de 72h para que os próximos disparos tragam novidades
-    if skus_postados:
-        salvar_historico_postados(historico_postados, skus_postados)
-
-    # 📊 TELEMETRIA & DASHBOARD HTML DE ACOMPANHAMENTO (Automático + Painel de Vendas Reais)
-    try:
-        from dashboard_generator import (
-            obter_membros_telegram,
-            obter_metricas_facebook_page,
-            registrar_metricas_execucao,
-            gerar_dashboard_html,
-        )
-        membros_tg = obter_membros_telegram(
-            os.getenv("TELEGRAM_BOT_TOKEN"),
-            os.getenv("TELEGRAM_CHAT_ID"),
-        )
-        fb_insights = obter_metricas_facebook_page(
-            os.getenv("FACEBOOK_PAGE_TOKEN"),
-            os.getenv("FACEBOOK_PAGE_ID"),
-        )
-        qtd_ml = int((df_produtos["loja"] == "Mercado Livre").sum()) if "loja" in df_produtos.columns else 0
-        qtd_magalu = int((df_produtos["loja"] == "Magalu").sum()) if "loja" in df_produtos.columns else 0
-        hist_metricas = registrar_metricas_execucao(
-            raspados_ml=qtd_ml,
-            raspados_magalu=qtd_magalu,
-            postados_telegram=len(skus_postados),
-            postados_threads=posts_threads,
-            postados_facebook=posts_facebook,
-            postados_x=posts_x,
-            membros_telegram=membros_tg,
-            fb_insights=fb_insights,
+        # O envio de e-mail agora é garantido, independentemente da IA funcionar ou não.
+        enviar_email_oportunidades(
+            email_disparo=os.getenv("EMAIL_USER"),
+            senha=os.getenv("EMAIL_PASSWORD"),
+            email_destinatario="rsouza.melo18@gmail.com",
             oportunidades_dict=oportunidades_dict,
+            df_todos_produtos=df_produtos 
         )
-        gerar_dashboard_html(hist_metricas)
-    except Exception as dash_err:
-        logging.warning(f"Falha ao atualizar dashboard de acompanhamento: {dash_err}")
-    
+
+        # 🚀 DISPARO AUTOMÁTICO NO TELEGRAM (Canal de Ofertas / Grupo VIP)
+        skus_postados = disparar_canal_telegram(
+            bot_token=os.getenv("TELEGRAM_BOT_TOKEN"),
+            chat_id=os.getenv("TELEGRAM_CHAT_ID"),
+            oportunidades_dict=oportunidades_dict,
+            df_todos_produtos=df_produtos,
+            intervalo_segundos=3
+        )
+
+        # 🐦 DISPARO AUTOMÁTICO NO X (Twitter) — Modo Econômico (Top 2 sem URL = ~US$ 0,015/post)
+        posts_x = disparar_x_twitter(
+            oportunidades_dict=oportunidades_dict,
+            df_todos_produtos=df_produtos,
+            max_posts=2,
+            intervalo_segundos=8
+        ) or 0
+
+        # 🧵 DISPARO AUTOMÁTICO NO THREADS (Meta) — 100% Gratuito (Top 5 com link direto + foto/preview)
+        posts_threads = disparar_threads(
+            oportunidades_dict=oportunidades_dict,
+            df_todos_produtos=df_produtos,
+            max_posts=5,
+            intervalo_segundos=6
+        ) or 0
+
+        # 📘 DISPARO AUTOMÁTICO NA PÁGINA DO FACEBOOK — 100% Gratuito (Top 5 foto limpa + link no 1º comentário)
+        posts_facebook = disparar_facebook_page(
+            oportunidades_dict=oportunidades_dict,
+            df_todos_produtos=df_produtos,
+            max_posts=5,
+            intervalo_segundos=6
+        ) or 0
+
+        # 🎬📱 DISPARO AUTOMÁTICO DE REELS (1 MP4) + STORIES (2 Cards 9:16) NA PÁGINA DO FACEBOOK
+        reels_fb, stories_fb = disparar_facebook_reels_stories(
+            oportunidades_dict=oportunidades_dict,
+            df_todos_produtos=df_produtos,
+            max_reels=1,
+            max_stories=2
+        )
+
+        # Atualiza o histórico de 72h no SQLite para que os próximos disparos tragam novidades
+        if skus_postados:
+            canais_usados = ["telegram"]
+            if posts_x:
+                canais_usados.append("x")
+            if posts_threads:
+                canais_usados.append("threads")
+            if posts_facebook:
+                canais_usados.append("facebook")
+            salvar_historico_postados(
+                skus_postados,
+                df_todos_produtos=df_produtos,
+                conn=conn_db,
+                canal_resumo=",".join(canais_usados),
+            )
+
+        # 📊 TELEMETRIA & DASHBOARD HTML DE ACOMPANHAMENTO (Automático + Painel de Vendas Reais)
+        try:
+            from dashboard_generator import (
+                obter_membros_telegram,
+                obter_metricas_facebook_page,
+                registrar_metricas_execucao,
+                gerar_dashboard_html,
+            )
+            membros_tg = obter_membros_telegram(
+                os.getenv("TELEGRAM_BOT_TOKEN"),
+                os.getenv("TELEGRAM_CHAT_ID"),
+            )
+            fb_insights = obter_metricas_facebook_page(
+                os.getenv("FACEBOOK_PAGE_TOKEN"),
+                os.getenv("FACEBOOK_PAGE_ID"),
+            )
+            qtd_ml = int((df_produtos["loja"] == "Mercado Livre").sum()) if "loja" in df_produtos.columns else 0
+            qtd_magalu = int((df_produtos["loja"] == "Magalu").sum()) if "loja" in df_produtos.columns else 0
+            hist_metricas = registrar_metricas_execucao(
+                raspados_ml=qtd_ml,
+                raspados_magalu=qtd_magalu,
+                postados_telegram=len(skus_postados),
+                postados_threads=posts_threads,
+                postados_facebook=posts_facebook,
+                postados_x=posts_x,
+                membros_telegram=membros_tg,
+                fb_insights=fb_insights,
+                oportunidades_dict=oportunidades_dict,
+            )
+            gerar_dashboard_html(hist_metricas)
+        except Exception as dash_err:
+            logging.warning(f"Falha ao atualizar dashboard de acompanhamento: {dash_err}")
+    finally:
+        conn_db.close()
+
     logging.info("Processo totalmente concluído! Confira seu e-mail, Telegram, X, Threads, Facebook e o Dashboard HTML.")
