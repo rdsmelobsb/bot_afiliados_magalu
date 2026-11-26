@@ -1410,12 +1410,23 @@ def formatar_texto_tweet(oportunidade, preco_antigo=None):
     return "\n".join(linhas)
 
 
+def _env_bool_flag(nome, default=False):
+    val = os.getenv(nome)
+    if val is None or str(val).strip() == "":
+        return bool(default)
+    return str(val).strip().lower() in ("1", "true", "sim", "yes", "on")
+
+
 def disparar_x_twitter(oportunidades_dict, df_todos_produtos=None, max_posts=2, intervalo_segundos=8):
     """
     Publica as melhores ofertas da rodada no X (Twitter) em MODO ECONÔMICO:
     foto JPEG + oferta sem URLs no texto (~US$ 0,015/post no Pay-Per-Use).
-    Por padrão posta as Top 2 ofertas por execução (6/dia nas 3 rodadas).
+    Desativado por padrão (X_ENABLED=false).
     """
+    if not _env_bool_flag("X_ENABLED", default=False):
+        logging.info("🐦 X (Twitter) desativado (X_ENABLED=false). Pulando publicação.")
+        return 0
+
     if not TWEEPY_DISPONIVEL:
         logging.warning("Biblioteca 'tweepy' não instalada. Pulando publicação no X (Twitter).")
         return
@@ -1572,9 +1583,12 @@ def formatar_texto_threads(oportunidade, preco_antigo=None):
 def disparar_threads(oportunidades_dict, df_todos_produtos=None, max_posts=5, intervalo_segundos=6):
     """
     Publica as melhores ofertas da rodada no Threads via API oficial da Meta (100% gratuita).
-    Descobre o THREADS_USER_ID automaticamente via /me usando apenas THREADS_ACCESS_TOKEN.
-    Tenta publicar com foto (JPEG/PNG) e faz fallback automático para TEXT + link_attachment.
+    Desativado por padrão (THREADS_ENABLED=false).
     """
+    if not _env_bool_flag("THREADS_ENABLED", default=False):
+        logging.info("🧵 Threads desativado (THREADS_ENABLED=false). Pulando publicação.")
+        return 0
+
     access_token = os.getenv("THREADS_ACCESS_TOKEN")
     if not access_token:
         logging.warning("Credencial THREADS_ACCESS_TOKEN ausente. Pulando publicação no Threads.")

@@ -8,10 +8,11 @@ import re
 import shutil
 import subprocess
 import textwrap
+import unicodedata
 from io import BytesIO
 
 try:
-    from PIL import Image, ImageDraw, ImageFont, ImageOps
+    from PIL import Image, ImageDraw, ImageEnhance, ImageFont, ImageOps
     PILLOW_OK = True
 except ImportError:
     PILLOW_OK = False
@@ -382,11 +383,11 @@ def gerar_video_reel_mp4(imagem_card_path, arquivo_saida=None, duracao_segundos=
     if tem_audio_real:
         dur_audio = _obter_duracao_audio(audio_path)
         if dur_audio:
-            duracao_segundos = max(8, min(20, int(math.ceil(dur_audio + 0.8))))
+            duracao_segundos = max(8, min(26, int(math.ceil(dur_audio + 0.8))))
 
     fps = 30
     total_frames = duracao_segundos * fps
-    # Zoom suave de 1.00x até ~1.08x centralizado + fade in de 0.4s
+    # Zoom suave de 1.00x até ~1.08x centralizado + fade in de 0.4s (suporta 9:16 1080x1920)
     vf = (
         f"scale=1080:1920,"
         f"zoompan=z='min(zoom+0.00028,1.08)':d={total_frames}:"
@@ -867,3 +868,530 @@ def gerar_video_reel_hyperframes(
         logging.warning(f"Exceção no HyperFrames (acionando fallback Pillow+ffmpeg): {e}")
 
     return None
+
+
+# --- FÁBRICA EDITORIAL TECH/GAMER (Card 4:5 + Reel 9:16 HyperFrames com Thalita) ---
+
+
+def _paleta_categoria_editorial(tag_categoria):
+    """Retorna paleta neon calibrada para contraste sobre scrim obsidian."""
+    cat = str(tag_categoria or "TECH").strip().upper()
+    if any(k in cat for k in ("HARD", "GPU", "CPU", "PC", "SSD")):
+        return (217, 255, 0), "#D9FF00", "HARDWARE"
+    if any(k in cat for k in ("GAME", "JOGO", "CONSOLE", "PS5", "XBOX", "SWITCH")):
+        return (0, 240, 255), "#00F0FF", "GAMES"
+    if any(k in cat for k in ("TECH", "CEL", "MOBILE", "AI", "IA")):
+        return (250, 204, 21), "#FACC15", "TECH"
+    return (56, 189, 248), "#38BDF8", (cat[:16] or "TECH")
+
+
+def _norm_palavra(txt):
+    bruto = unicodedata.normalize("NFKD", str(txt or "").lower())
+    sem_acentos = "".join(ch for ch in bruto if not unicodedata.combining(ch))
+    return re.sub(r"[^\w]", "", sem_acentos)
+
+
+def _aplicar_destaque_html(headline, destaque):
+    """Destaca palavras de destaque_card dentro da headline HTML sem quebrar acentos."""
+    hl_str = str(headline or "").strip()
+    tokens_dest = {_norm_palavra(p) for p in str(destaque or "").split() if _norm_palavra(p)}
+    if not tokens_dest:
+        return html.escape(hl_str)
+
+    partes = []
+    for palavra in hl_str.split():
+        esc = html.escape(palavra)
+        if _norm_palavra(palavra) in tokens_dest:
+            partes.append(f'<span class="hl-accent">{esc}</span>')
+        else:
+            partes.append(esc)
+    return " ".join(partes)
+
+
+def gerar_locucao_texto_ptbr(
+    texto_fala,
+    arquivo_saida=None,
+    voice=VOZ_PADRAO_REEL,
+    rate="+8%",
+):
+    """Gera locução neural PT-BR via edge-tts (Thalita) a partir de roteiro pronto."""
+    if not EDGE_TTS_OK:
+        logging.warning("Biblioteca 'edge-tts' não instalada. Reel editorial será gerado sem voz.")
+        return None
+
+    fala_limpa = re.sub(r"https?://\S+", "", str(texto_fala or ""))
+    fala_limpa = re.sub(r"\s+", " ", fala_limpa).strip()
+    if not fala_limpa:
+        return None
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    if not arquivo_saida:
+        arquivo_saida = os.path.join(OUTPUT_DIR, "reel_editorial_voz.mp3")
+
+    try:
+        async def _run():
+            comm = edge_tts.Communicate(fala_limpa, voice=voice, rate=rate)
+            await comm.save(arquivo_saida)
+
+        asyncio.run(_run())
+        if os.path.exists(arquivo_saida) and os.path.getsize(arquivo_saida) > 1000:
+            logging.info(f"🎙️ Locução editorial PT-BR ({voice}) gerada: {arquivo_saida}")
+            return arquivo_saida
+    except Exception as exc:
+        logging.warning(f"Falha ao gerar locução editorial edge-tts: {exc}")
+
+    return None
+
+
+def gerar_card_editorial_rss(
+    headline_card,
+    destaque_card="",
+    tag_categoria="TECH",
+    fonte="Redação",
+    img_bytes=None,
+    arquivo_saida=None,
+    tamanho=(1080, 1350),
+):
+    """
+    Gera card editorial 4:5 (1080x1350) ou 9:16 com estética Impeccable Portal Gamer:
+      - Foto real da notícia com smart-crop (ou fundo obsidian com grade e glow quando sem foto)
+      - Scrim cinematográfico escuro garantindo contraste WCAG na tipografia
+      - Pill de categoria neon no topo + headline bold com palavras em destaque neon
+      - Barra de rodapé limpa: GAMESTORE  •  VIA [FONTE]
+    """
+    if not PILLOW_OK:
+        logging.warning("Pillow não disponível para gerar card editorial.")
+        return None
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    if not arquivo_saida:
+        arquivo_saida = os.path.join(OUTPUT_DIR, "card_editorial_rss.jpg")
+
+    w, h = int(tamanho[0]), int(tamanho[1])
+    cor_accent, _, cat_label = _paleta_categoria_editorial(tag_categoria)
+    cor_bg = (10, 11, 14)
+    cor_text = (245, 247, 250)
+    cor_muted = (165, 174, 190)
+
+    # 1. Fundo: foto real com crop inteligente ou obsidian tech editorial
+    canvas = None
+    if img_bytes:
+        try:
+            foto = Image.open(BytesIO(img_bytes))
+            if foto.mode in ("RGBA", "LA", "P"):
+                fundo = Image.new("RGB", foto.size, cor_bg)
+                if foto.mode == "P":
+                    foto = foto.convert("RGBA")
+                fundo.paste(foto, mask=foto.split()[-1] if foto.mode == "RGBA" else None)
+                foto = fundo
+            else:
+                foto = foto.convert("RGB")
+            foto = ImageOps.fit(foto, (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.35))
+            foto = ImageEnhance.Contrast(foto).enhance(1.06)
+            canvas = foto
+        except Exception as exc:
+            logging.warning(f"Falha ao processar foto da notícia no card editorial (usando fallback dark): {exc}")
+            canvas = None
+
+    if canvas is None:
+        canvas = Image.new("RGB", (w, h), cor_bg)
+        draw_bg = ImageDraw.Draw(canvas)
+        for gx in range(0, w, 54):
+            draw_bg.line([(gx, 0), (gx, h)], fill=(20, 23, 30), width=1)
+        for gy in range(0, h, 54):
+            draw_bg.line([(0, gy), (w, gy)], fill=(20, 23, 30), width=1)
+        # Glow sutil no topo direito com a cor da categoria
+        glow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        dg = ImageDraw.Draw(glow)
+        for rad, alp in ((520, 22), (380, 28), (240, 34)):
+            dg.ellipse([w - rad - 40, -rad // 2, w + rad // 2, rad + 120], fill=(*cor_accent, alp))
+        canvas = Image.alpha_composite(canvas.convert("RGBA"), glow).convert("RGB")
+
+    # 2. Scrim cinematográfico vertical (protege pill no topo e headline na base)
+    scrim = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    scrim_draw = ImageDraw.Draw(scrim)
+    top_end = int(h * 0.22)
+    bot_start = int(h * 0.30)
+    bot_solid = int(h * 0.72)
+
+    for y in range(h):
+        alpha = 0
+        if y < top_end:
+            ratio = 1.0 - (y / max(top_end, 1))
+            alpha = int(170 * ratio)
+        if y >= bot_start:
+            if y >= bot_solid:
+                alpha = max(alpha, 246)
+            else:
+                ratio = (y - bot_start) / max(bot_solid - bot_start, 1)
+                alpha = max(alpha, int(246 * (ratio ** 1.35)))
+        if alpha > 0:
+            scrim_draw.line([(0, y), (w, y)], fill=(10, 11, 14, alpha))
+
+    canvas = Image.alpha_composite(canvas.convert("RGBA"), scrim).convert("RGB")
+    draw = ImageDraw.Draw(canvas)
+
+    # Faixa superior de acento
+    draw.rectangle([0, 0, w, 9], fill=cor_accent)
+
+    pad_x = 72
+    max_txt_w = w - (pad_x * 2)
+
+    # 3. Pill de categoria no topo + selo GIRO GAMESTORE
+    y_top = 150 if h >= 1700 else 58
+    f_pill = _carregar_fonte(26, bold=True)
+    pill_txt = cat_label
+    pb = draw.textbbox((0, 0), pill_txt, font=f_pill)
+    pill_w = (pb[2] - pb[0]) + 62
+    pill_h = 52
+    draw.rounded_rectangle(
+        [pad_x, y_top, pad_x + pill_w, y_top + pill_h],
+        radius=12,
+        fill=(15, 18, 25),
+        outline=cor_accent,
+        width=2,
+    )
+    draw.rounded_rectangle(
+        [pad_x + 18, y_top + 17, pad_x + 34, y_top + 33],
+        radius=4,
+        fill=cor_accent,
+    )
+    draw.text((pad_x + 44, y_top + 11), pill_txt, font=f_pill, fill=cor_text)
+
+    f_giro = _carregar_fonte(24, bold=True)
+    giro_txt = "GIRO GAMESTORE"
+    gb = draw.textbbox((0, 0), giro_txt, font=f_giro)
+    draw.text((w - pad_x - (gb[2] - gb[0]), y_top + 13), giro_txt, font=f_giro, fill=cor_muted)
+
+    # 4. Headline editorial com auto-ajuste de fonte + destaque neon inline
+    headline_limpa = re.sub(r"\s+", " ", str(headline_card or "Novidade Tech & Gamer")).strip()
+    tokens_dest = {_norm_palavra(p) for p in str(destaque_card or "").split() if _norm_palavra(p)}
+
+    font_hl = _carregar_fonte(64, bold=True)
+    linhas_hl = [headline_limpa]
+    line_step = 76
+    for tam_fonte in (68, 62, 56, 50, 44):
+        cand_font = _carregar_fonte(tam_fonte, bold=True)
+        # Calcula largura aproximada e envolve palavra a palavra com precisão em px
+        palavras = headline_limpa.split()
+        linhas_tmp = []
+        atual = ""
+        for pal in palavras:
+            teste = f"{atual} {pal}".strip()
+            tb = draw.textbbox((0, 0), teste, font=cand_font)
+            if (tb[2] - tb[0]) <= max_txt_w or not atual:
+                atual = teste
+            else:
+                linhas_tmp.append(atual)
+                atual = pal
+        if atual:
+            linhas_tmp.append(atual)
+        if len(linhas_tmp) <= 4:
+            font_hl = cand_font
+            linhas_hl = linhas_tmp
+            line_step = int(tam_fonte * 1.18)
+            break
+    else:
+        font_hl = _carregar_fonte(44, bold=True)
+        linhas_hl = textwrap.wrap(headline_limpa, width=26)[:4]
+        line_step = 54
+
+    # Posicionamento acima do rodapé (com safe zone maior se 9:16)
+    footer_bottom_margin = 205 if h >= 1700 else 72
+    y_footer_txt = h - footer_bottom_margin
+    y_divider = y_footer_txt - 28
+    hl_block_h = len(linhas_hl) * line_step
+    y_accent_bar = y_divider - hl_block_h - 36
+    y_hl_start = y_accent_bar + 22
+
+    # Barra de acento curta antes da manchete
+    draw.rounded_rectangle([pad_x, y_accent_bar, pad_x + 92, y_accent_bar + 7], radius=4, fill=cor_accent)
+
+    # Renderização palavra por palavra com sombra leve + cor neon nas palavras-chave
+    for idx_l, linha in enumerate(linhas_hl):
+        y_line = y_hl_start + (idx_l * line_step)
+        x_cursor = pad_x
+        palavras_linha = linha.split()
+        for p_idx, pal in enumerate(palavras_linha):
+            is_hi = _norm_palavra(pal) in tokens_dest
+            cor_pal = cor_accent if is_hi else cor_text
+            sufixo = " " if p_idx < len(palavras_linha) - 1 else ""
+            trecho = pal + sufixo
+            draw.text((x_cursor + 2, y_line + 3), trecho, font=font_hl, fill=(0, 0, 0))
+            draw.text((x_cursor, y_line), trecho, font=font_hl, fill=cor_pal)
+            pb_w = draw.textbbox((0, 0), trecho, font=font_hl)
+            x_cursor += pb_w[2] - pb_w[0]
+
+    # 5. Barra de rodapé limpa
+    draw.line([(pad_x, y_divider), (w - pad_x, y_divider)], fill=(48, 54, 68), width=2)
+    f_foot = _carregar_fonte(26, bold=True)
+    fonte_upper = str(fonte or "REDAÇÃO").strip().upper()
+    foot_left = f"GAMESTORE  •  VIA {fonte_upper}"
+    draw.text((pad_x, y_footer_txt), foot_left, font=f_foot, fill=cor_text)
+
+    foot_right = "@PROMOSGEEKTECH"
+    frb = draw.textbbox((0, 0), foot_right, font=f_foot)
+    draw.text((w - pad_x - (frb[2] - frb[0]), y_footer_txt), foot_right, font=f_foot, fill=cor_accent)
+
+    canvas.save(arquivo_saida, format="JPEG", quality=93)
+    logging.info(f"🎨 Card editorial {w}x{h} gerado: {arquivo_saida}")
+    return arquivo_saida
+
+
+def gerar_reel_editorial_rss(
+    headline_card,
+    destaque_card="",
+    tag_categoria="TECH",
+    fonte="Redação",
+    roteiro_reel="",
+    img_bytes=None,
+    arquivo_saida=None,
+):
+    """
+    Gera Reel Editorial 9:16 (1080x1920) via HeyGen HyperFrames + locução da Thalita (edge-tts),
+    com fallback automático para Card 9:16 Pillow + ffmpeg.
+    """
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    if not arquivo_saida:
+        arquivo_saida = os.path.join(OUTPUT_DIR, "reel_editorial_rss.mp4")
+    arquivo_saida_abs = os.path.abspath(arquivo_saida)
+
+    voz_path = gerar_locucao_texto_ptbr(
+        roteiro_reel or headline_card,
+        arquivo_saida=os.path.join(OUTPUT_DIR, "reel_editorial_voz.mp3"),
+    )
+
+    duracao_audio = 0.0
+    duracao_total = 12.0
+    tem_audio = False
+    if voz_path and os.path.exists(voz_path):
+        dur_probe = _obter_duracao_audio(voz_path)
+        duracao_audio = round(dur_probe, 2) if dur_probe else 12.0
+        duracao_total = round(max(10.0, min(26.0, duracao_audio + 0.8)), 2)
+        tem_audio = True
+
+    hf_bin = shutil.which("hyperframes") or shutil.which("hyperframes.cmd")
+    npx_bin = shutil.which("npx") or shutil.which("npx.cmd")
+
+    if hf_bin or npx_bin:
+        job_dir = os.path.abspath(os.path.join(OUTPUT_DIR, "hf_editorial_job"))
+        assets_dir = os.path.join(job_dir, "assets")
+        os.makedirs(assets_dir, exist_ok=True)
+
+        tem_img = False
+        if img_bytes:
+            try:
+                with open(os.path.join(assets_dir, "noticia.jpg"), "wb") as f_img:
+                    f_img.write(img_bytes)
+                tem_img = True
+            except Exception as exc:
+                logging.warning(f"Erro ao gravar noticia.jpg para Reel editorial: {exc}")
+
+        if tem_audio:
+            shutil.copy2(voz_path, os.path.join(assets_dir, "voz_editorial.mp3"))
+
+        _, accent_hex, cat_label = _paleta_categoria_editorial(tag_categoria)
+        headline_markup = _aplicar_destaque_html(headline_card, destaque_card)
+        fonte_esc = html.escape(str(fonte or "REDAÇÃO").strip().upper())
+
+        with open(os.path.join(job_dir, "hyperframes.json"), "w", encoding="utf-8") as f_cfg:
+            json.dump(
+                {
+                    "$schema": "https://hyperframes.heygen.com/schema/hyperframes.json",
+                    "paths": {"blocks": "compositions", "components": "compositions/components", "assets": "assets"},
+                    "media": {"autoProxy": True},
+                },
+                f_cfg,
+                indent=2,
+            )
+
+        bg_img_html = '<img id="hero-img" src="./assets/noticia.jpg" alt="Notícia" />' if tem_img else ""
+        audio_html = (
+            f'<audio src="./assets/voz_editorial.mp3" data-start="0.2" data-duration="{duracao_audio}" data-track-index="1"></audio>'
+            if tem_audio
+            else ""
+        )
+
+        index_html = f"""<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1080, height=1920" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700;800;900&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet" />
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.15.0/dist/gsap.min.js"></script>
+    <style>
+      :root {{
+        --bg: #0A0B0E;
+        --text: #F5F7FA;
+        --muted: #A5AEBE;
+        --accent: {accent_hex};
+      }}
+      * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+      html, body {{
+        width: 1080px; height: 1920px; overflow: hidden;
+        background: var(--bg);
+        font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+        color: var(--text);
+      }}
+      #root {{
+        position: relative; width: 1080px; height: 1920px; overflow: hidden;
+        background: var(--bg);
+      }}
+      #bg-grid {{
+        position: absolute; inset: 0;
+        background-image:
+          linear-gradient(to right, rgba(255,255,255,0.035) 1px, transparent 1px),
+          linear-gradient(to bottom, rgba(255,255,255,0.035) 1px, transparent 1px);
+        background-size: 54px 54px;
+      }}
+      #hero-img {{
+        position: absolute; inset: 0; width: 1080px; height: 1920px;
+        object-fit: cover; object-position: 50% 35%;
+        transform-origin: center center;
+      }}
+      #scrim {{
+        position: absolute; inset: 0;
+        background: linear-gradient(
+          180deg,
+          rgba(10,11,14,0.72) 0%,
+          rgba(10,11,14,0.18) 28%,
+          rgba(10,11,14,0.55) 50%,
+          rgba(10,11,14,0.96) 76%,
+          rgba(10,11,14,0.99) 100%
+        );
+      }}
+      #top-stripe {{
+        position: absolute; top: 0; left: 0; width: 1080px; height: 10px;
+        background: var(--accent); z-index: 6;
+      }}
+      /* Invariante HyperFrames: class="clip" apenas no container raiz #stage */
+      #stage {{
+        position: absolute; inset: 0; width: 1080px; height: 1920px;
+        display: flex; flex-direction: column; justify-content: space-between;
+        padding: 152px 72px 210px 72px; z-index: 4;
+      }}
+      #masthead {{
+        display: flex; align-items: center; justify-content: space-between;
+      }}
+      #cat-pill {{
+        display: inline-flex; align-items: center; gap: 14px;
+        padding: 12px 26px; border-radius: 12px;
+        background: rgba(15, 18, 25, 0.90);
+        border: 2px solid var(--accent);
+        font-family: "Barlow Condensed", sans-serif;
+        font-size: 32px; font-weight: 900; letter-spacing: 0.08em;
+      }}
+      #cat-dot {{ width: 14px; height: 14px; border-radius: 4px; background: var(--accent); }}
+      #brand-tag {{
+        font-family: "Barlow Condensed", sans-serif;
+        font-size: 30px; font-weight: 800; letter-spacing: 0.08em;
+        color: var(--muted);
+      }}
+      #bottom-block {{
+        display: flex; flex-direction: column; gap: 26px;
+      }}
+      #accent-rule {{
+        width: 110px; height: 8px; border-radius: 4px;
+        background: var(--accent); transform-origin: left center;
+      }}
+      #headline {{
+        font-size: 70px; font-weight: 800; line-height: 1.14;
+        letter-spacing: -0.025em;
+        text-shadow: 0 4px 20px rgba(0, 0, 0, 0.65);
+      }}
+      .hl-accent {{ color: var(--accent); }}
+      #progress-track {{
+        width: 100%; height: 6px; border-radius: 999px;
+        background: rgba(255, 255, 255, 0.14); overflow: hidden;
+      }}
+      #progress-bar {{
+        width: 100%; height: 100%; background: var(--accent);
+        transform-origin: left center; transform: scaleX(0);
+      }}
+      #footer-bar {{
+        display: flex; justify-content: space-between; align-items: center;
+        font-family: "Barlow Condensed", sans-serif;
+        font-size: 32px; font-weight: 800; letter-spacing: 0.06em;
+      }}
+      #footer-handle {{ color: var(--accent); }}
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="editorial" data-start="0" data-duration="{duracao_total}" data-width="1080" data-height="1920">
+      <div id="top-stripe"></div>
+      <div id="bg-grid"></div>
+      {bg_img_html}
+      <div id="scrim"></div>
+      <div id="stage" class="clip" data-start="0" data-duration="{duracao_total}" data-track-index="0">
+        <header id="masthead">
+          <div id="cat-pill"><span id="cat-dot"></span><span>{cat_label}</span></div>
+          <span id="brand-tag">GIRO GAMESTORE</span>
+        </header>
+        <section id="bottom-block">
+          <div id="accent-rule"></div>
+          <h1 id="headline">{headline_markup}</h1>
+          <div id="progress-track"><div id="progress-bar"></div></div>
+          <footer id="footer-bar">
+            <span>GAMESTORE  •  VIA {fonte_esc}</span>
+            <span id="footer-handle">@PROMOSGEEKTECH</span>
+          </footer>
+        </section>
+      </div>
+      {audio_html}
+    </div>
+    <script>
+      const tl = gsap.timeline({{ paused: true }});
+      if (document.querySelector("#hero-img")) {{
+        tl.fromTo("#hero-img", {{ scale: 1.0 }}, {{ scale: 1.12, duration: {duracao_total}, ease: "none" }}, 0.0);
+      }}
+      tl.fromTo("#masthead", {{ opacity: 0, y: -20 }}, {{ opacity: 1, y: 0, duration: 0.45, ease: "power3.out" }}, 0.0);
+      tl.fromTo("#accent-rule", {{ scaleX: 0 }}, {{ scaleX: 1, duration: 0.45, ease: "power3.out" }}, 0.25);
+      tl.fromTo("#headline", {{ opacity: 0, y: 28 }}, {{ opacity: 1, y: 0, duration: 0.60, ease: "power3.out" }}, 0.35);
+      tl.fromTo("#footer-bar", {{ opacity: 0, y: 12 }}, {{ opacity: 1, y: 0, duration: 0.40, ease: "power2.out" }}, 0.65);
+      tl.to("#progress-bar", {{ scaleX: 1, duration: {max(duracao_total - 0.5, 4.0)}, ease: "none" }}, 0.4);
+      window.__timelines["editorial"] = tl;
+      tl.seek(0);
+    </script>
+  </body>
+</html>"""
+
+        with open(os.path.join(job_dir, "index.html"), "w", encoding="utf-8") as f_html:
+            f_html.write(index_html)
+
+        cmd = (
+            [hf_bin, "render", "--output", arquivo_saida_abs]
+            if hf_bin
+            else [npx_bin, "--yes", "hyperframes", "render", "--output", arquivo_saida_abs]
+        )
+        try:
+            logging.info(f"⚡ Renderizando Reel editorial via HyperFrames ({duracao_total}s)...")
+            res = subprocess.run(cmd, cwd=job_dir, capture_output=True, text=True, timeout=240)
+            if res.returncode == 0 and os.path.exists(arquivo_saida_abs) and os.path.getsize(arquivo_saida_abs) > 50000:
+                tamanho_kb = os.path.getsize(arquivo_saida_abs) // 1024
+                logging.info(f"🎬 Reel Editorial HyperFrames gerado ({duracao_total}s, {tamanho_kb} KB): {arquivo_saida_abs}")
+                return arquivo_saida_abs
+            err_tail = (res.stderr or res.stdout or "").strip()[-400:]
+            logging.warning(f"HyperFrames editorial falhou ({res.returncode}: {err_tail}). Usando fallback Pillow+ffmpeg.")
+        except Exception as exc:
+            logging.warning(f"Exceção HyperFrames editorial (fallback Pillow+ffmpeg): {exc}")
+
+    # Fallback Pillow + ffmpeg (Card 9:16 + áudio da Thalita)
+    card_9x16 = gerar_card_editorial_rss(
+        headline_card=headline_card,
+        destaque_card=destaque_card,
+        tag_categoria=tag_categoria,
+        fonte=fonte,
+        img_bytes=img_bytes,
+        arquivo_saida=os.path.join(OUTPUT_DIR, "reel_editorial_card_fallback.jpg"),
+        tamanho=(1080, 1920),
+    )
+    if not card_9x16:
+        return None
+    return gerar_video_reel_mp4(
+        card_9x16,
+        arquivo_saida=arquivo_saida_abs,
+        duracao_segundos=int(math.ceil(duracao_total)),
+        audio_path=voz_path,
+    )

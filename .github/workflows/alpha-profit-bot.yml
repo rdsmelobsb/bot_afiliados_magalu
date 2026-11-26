@@ -92,8 +92,11 @@ jobs:
             python magalu_scrapper.py
           fi
         env:
+          X_ENABLED: 'false'
+          THREADS_ENABLED: 'false'
           EDITORIAL_ENABLED: 'true'
-          EDITORIAL_TELEGRAM_ENABLED: 'false'
+          EDITORIAL_TELEGRAM_ENABLED: 'true'
+          EDITORIAL_REEL_ENABLED: 'true'
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           EMAIL_USER: ${{ secrets.EMAIL_USER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
