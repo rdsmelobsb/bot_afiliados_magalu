@@ -483,17 +483,251 @@ def calcular_comissao_mercadolivre(categoria_nome, nome_produto):
     return 5.0
 
 
+import urllib.parse as _urllib_parse
+from html.parser import HTMLParser
+
+
+URL_ML_SOCIAL_PADRAO = (
+    "https://www.mercadolivre.com.br/social/rafaelmelo825"
+    "?matt_word=rafaelmelo825&matt_tool=61727000&forceInApp=true"
+    "&ref=BNMjcwPk80fK3V%2FaZkPyOPSUZvCKY1lXkz7gVn1Lk0heRiFWKmz5M4HRd6c6Lzr"
+    "%2FuAj586dkXZ2W8cbQV1wKa2LpVSemU7GsCrR5Mv0Ou4hXSI4eC47TaGOR2DuPSqEh81"
+    "ti8ZXhLB0DAdcCStEU8%2B3IwqjwS6GC2byelKta%2BPLZ9yC8%2FTUySd5A%2ByhIJJQo"
+    "9Gt9NvwD9Dle76xPtnsfM9P9NL%2Fj%2BQiaJVXOUEol2buRlVN5bpKt092dM8jij639Z3JOHg%3D%3D"
+)
+
+ROTAS_CATALOGO_ML_WWW = [
+    ("https://www.mercadolivre.com.br/ofertas", "Ofertas do Dia", True),
+    ("https://www.mercadolivre.com.br/mais-vendidos/MLB1144", "Games", False),
+    ("https://www.mercadolivre.com.br/mais-vendidos/MLB1648", "Informática", False),
+    ("https://www.mercadolivre.com.br/mais-vendidos/MLB1051", "Celulares", False),
+    ("https://www.mercadolivre.com.br/mais-vendidos/MLB1000", "Áudio & Geek", False),
+]
+
+_TERMOS_NICHO_FORTE_ML = (
+    "iphone", "galaxy", "samsung", "motorola", "xiaomi", "poco", "redmi",
+    "smartphone", "celular", "smart tv", "tablet", "ipad", "kindle",
+    "ssd", "nvme", "ryzen", "intel", "rtx", "gtx", "geforce", "radeon",
+    "monitor", "mouse", "teclado", "headset", "fone", "tws", "caixa de som",
+    "soundbar", "jbl", "playstation", "ps5", "ps4", "xbox", "nintendo", "switch",
+    "controle", "dualsense", "notebook", "gamer", "roteador", "smartwatch",
+    "webcam", "microfone", "cadeira gamer", "placa mae", "placa-mãe", "memória ram",
+)
+
+
 def converter_link_afiliado_ml(url_produto, matt_tool="61727000", matt_word="rafaelmelo825"):
     """
-    Injeta os parâmetros oficiais de rastreamento de afiliado do Rafael (matt_tool e matt_word).
+    Normaliza URLs do Mercado Livre e injeta deterministicamente os parâmetros oficiais
+    de afiliado (matt_tool e matt_word).
     """
     if not url_produto:
         return None
-    url_limpa = url_produto.split("#")[0]
-    sep = "&" if "?" in url_limpa else "?"
-    if "matt_tool" not in url_limpa:
-        url_limpa = f"{url_limpa}{sep}matt_tool={matt_tool}&matt_word={matt_word}&forceInApp=true"
-    return url_limpa
+    url_limpa = str(url_produto).strip().split("#")[0]
+    if not url_limpa:
+        return None
+    if url_limpa.startswith("//"):
+        url_limpa = f"https:{url_limpa}"
+    elif url_limpa.startswith("/"):
+        url_limpa = f"https://www.mercadolivre.com.br{url_limpa}"
+
+    if not url_limpa.startswith(("http://", "https://")):
+        return None
+
+    parsed = _urllib_parse.urlparse(url_limpa)
+    qs = _urllib_parse.parse_qs(parsed.query, keep_blank_values=True)
+    if "matt_tool" not in qs or not qs["matt_tool"][0]:
+        qs["matt_tool"] = [str(matt_tool)]
+    if "matt_word" not in qs or not qs["matt_word"][0]:
+        qs["matt_word"] = [str(matt_word)]
+    if "forceInApp" not in qs:
+        qs["forceInApp"] = ["true"]
+
+    nova_query = _urllib_parse.urlencode(qs, doseq=True)
+    return _urllib_parse.urlunparse(parsed._replace(query=nova_query))
+
+
+def item_ml_aderente_nicho(item, exigir_nicho_forte=False):
+    """
+    Blinda o catálogo do Mercado Livre contra itens fora de nicho (especialmente em /ofertas):
+      - Rejeita sempre itens penalizados por `termos_fora_nicho`.
+      - Quando `exigir_nicho_forte=True`, exige aderência explícita a Tech/Games/Celulares/Áudio.
+    """
+    if not isinstance(item, dict):
+        return False
+    score_nicho = _bonus_nicho_gamestore(item)
+    if score_nicho < 0:
+        return False
+    if not exigir_nicho_forte:
+        return True
+    if score_nicho > 0:
+        return True
+    texto = " ".join([
+        str(item.get("nome_produto", "") or ""),
+        str(item.get("categoria", "") or ""),
+    ]).lower()
+    return any(t in texto for t in _TERMOS_NICHO_FORTE_ML)
+
+
+class _MLCardsHTMLParser(HTMLParser):
+    """Parser HTML leve (stdlib) para fallback local quando BeautifulSoup não estiver disponível."""
+
+    _CARD_CLASS_RE = re.compile(
+        r"\b(poly-card|ui-search-layout__item|promotion-item|ui-recommendations-card)\b",
+        re.I,
+    )
+    _VOID_TAGS = {"img", "br", "hr", "input", "meta", "link", "source"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.cards = []
+        self._card = None
+        self._card_depth = 0
+        self._in_title_depth = 0
+        self._in_a_depth = 0
+        self._a_href_atual = ""
+        self._a_txt_atual = []
+        self._in_curr_price_depth = 0
+        self._in_prev_price_depth = 0
+        self._in_fraction_depth = 0
+        self._in_cents_depth = 0
+        self._in_disc_depth = 0
+        self._curr_frac = []
+        self._curr_cents = []
+        self._prev_txt = []
+        self._disc_txt = []
+
+    def handle_starttag(self, tag, attrs):
+        attr_map = dict(attrs or [])
+        cls = str(attr_map.get("class") or "")
+        is_void = tag.lower() in self._VOID_TAGS
+
+        if self._card is None:
+            if self._CARD_CLASS_RE.search(cls):
+                self._card = {
+                    "nome": "",
+                    "href": "",
+                    "imagem_url": None,
+                    "curr_frac": "",
+                    "curr_cents": "",
+                    "prev_txt": "",
+                    "disc_txt": "",
+                }
+                self._card_depth = 1
+                self._in_title_depth = 0
+                self._in_a_depth = 0
+                self._in_curr_price_depth = 0
+                self._in_prev_price_depth = 0
+                self._in_fraction_depth = 0
+                self._in_cents_depth = 0
+                self._in_disc_depth = 0
+                self._curr_frac = []
+                self._curr_cents = []
+                self._prev_txt = []
+                self._disc_txt = []
+            return
+
+        if not is_void:
+            self._card_depth += 1
+
+        if tag.lower() == "a":
+            href = str(attr_map.get("href") or "").strip()
+            if href and not self._card["href"]:
+                self._card["href"] = href
+            if not is_void:
+                self._in_a_depth += 1
+                self._a_href_atual = href
+                self._a_txt_atual = []
+            if re.search(r"poly-component__title|ui-search-link|promotion-item__link|ui-recommendations-card__link", cls, re.I):
+                if not is_void and self._in_title_depth == 0:
+                    self._in_title_depth = self._card_depth
+        elif re.search(r"poly-component__title|ui-search-item__title|promotion-item__title|ui-recommendations-card__title", cls, re.I) or (tag.lower() == "h2" and not self._card["nome"]):
+            if not is_void and self._in_title_depth == 0:
+                self._in_title_depth = self._card_depth
+
+        if tag.lower() == "img" and not self._card["imagem_url"]:
+            for cand in (
+                attr_map.get("data-src"),
+                attr_map.get("data-srcset"),
+                attr_map.get("srcset"),
+                attr_map.get("src"),
+            ):
+                if cand and not str(cand).strip().startswith("data:"):
+                    c_str = str(cand).split(",")[0].strip().split()[0].strip()
+                    if c_str.startswith("//"):
+                        c_str = f"https:{c_str}"
+                    if c_str.startswith("http"):
+                        self._card["imagem_url"] = c_str
+                        break
+
+        if re.search(r"poly-price__previous|promotion-item__oldprice|ui-search-price__part--original", cls, re.I) or (tag.lower() == "s" and not is_void):
+            if not is_void and self._in_prev_price_depth == 0:
+                self._in_prev_price_depth = self._card_depth
+        elif re.search(r"poly-price__current|promotion-item__price|ui-recommendations-card__price|ui-search-price__second-line", cls, re.I):
+            if not is_void and self._in_curr_price_depth == 0:
+                self._in_curr_price_depth = self._card_depth
+
+        if re.search(r"andes-money-amount__fraction|price-tag-fraction", cls, re.I):
+            if not is_void and self._in_prev_price_depth == 0 and self._in_fraction_depth == 0:
+                self._in_fraction_depth = self._card_depth
+        elif re.search(r"andes-money-amount__cents", cls, re.I):
+            if not is_void and self._in_prev_price_depth == 0 and self._in_cents_depth == 0:
+                self._in_cents_depth = self._card_depth
+        elif re.search(r"discount|disc-label|promotion-item__discount", cls, re.I):
+            if not is_void and self._in_disc_depth == 0:
+                self._in_disc_depth = self._card_depth
+
+    def handle_data(self, data):
+        if self._card is None or not data:
+            return
+        if self._in_title_depth:
+            self._card["nome"] += data
+        if self._in_a_depth:
+            self._a_txt_atual.append(data)
+        if self._in_prev_price_depth:
+            self._prev_txt.append(data)
+        else:
+            if self._in_fraction_depth:
+                self._curr_frac.append(data)
+            elif self._in_cents_depth:
+                self._curr_cents.append(data)
+            elif self._in_curr_price_depth and not self._curr_frac:
+                self._curr_frac.append(data)
+        if self._in_disc_depth:
+            self._disc_txt.append(data)
+
+    def handle_endtag(self, tag):
+        if self._card is None or tag.lower() in self._VOID_TAGS:
+            return
+        if tag.lower() == "a" and self._in_a_depth > 0:
+            self._in_a_depth -= 1
+            if not self._card["nome"].strip() and self._a_txt_atual:
+                cand_txt = "".join(self._a_txt_atual).strip()
+                if len(cand_txt) >= 6:
+                    self._card["nome"] = cand_txt
+                    if self._a_href_atual:
+                        self._card["href"] = self._a_href_atual
+        if self._in_title_depth == self._card_depth:
+            self._in_title_depth = 0
+        if self._in_prev_price_depth == self._card_depth:
+            self._in_prev_price_depth = 0
+        if self._in_curr_price_depth == self._card_depth:
+            self._in_curr_price_depth = 0
+        if self._in_fraction_depth == self._card_depth:
+            self._in_fraction_depth = 0
+        if self._in_cents_depth == self._card_depth:
+            self._in_cents_depth = 0
+        if self._in_disc_depth == self._card_depth:
+            self._in_disc_depth = 0
+
+        self._card_depth -= 1
+        if self._card_depth <= 0:
+            self._card["nome"] = re.sub(r"\s+", " ", self._card["nome"]).strip()
+            self._card["curr_frac"] = "".join(self._curr_frac).strip()
+            self._card["curr_cents"] = "".join(self._curr_cents).strip()
+            self._card["prev_txt"] = "".join(self._prev_txt).strip()
+            self._card["disc_txt"] = "".join(self._disc_txt).strip()
+            self.cards.append(self._card)
+            self._card = None
 
 
 def limpar_preco_ml(texto):
@@ -516,161 +750,414 @@ def limpar_preco_ml(texto):
         return None
 
 
-def extrair_dados_mercadolivre_live(url, categoria_padrao="Geral"):
+def _montar_item_ml_normalizado(
+    nome,
+    raw_url,
+    preco_atual,
+    preco_antigo,
+    percentual_desconto,
+    imagem_url,
+    categoria_padrao,
+    idx,
+    termos_banidos,
+    exigir_nicho_forte=False,
+):
+    nome_limpo = re.sub(r"\s+", " ", str(nome or "")).strip()
+    if not nome_limpo or any(t in nome_limpo.lower() for t in termos_banidos):
+        return None
+    url_afiliado = converter_link_afiliado_ml(raw_url)
+    if not url_afiliado or not preco_atual:
+        return None
+
+    preco_antigo_val = preco_antigo if preco_antigo and preco_antigo > preco_atual else preco_atual
+    desc_val = float(percentual_desconto or 0.0)
+    if desc_val == 0.0 and preco_antigo_val > preco_atual:
+        desc_val = round(((preco_antigo_val - preco_atual) / preco_antigo_val) * 100, 2)
+
+    comissao = calcular_comissao_mercadolivre(categoria_padrao, nome_limpo)
+    lucro = round(preco_atual * (comissao / 100), 2)
+    sku_match = re.search(r"(MLB-?\d+)", str(raw_url or ""), re.I)
+    sku = f"ML_{sku_match.group(1).upper()}" if sku_match else f"ML_{idx}_{abs(hash(nome_limpo)) % 1000000}"
+
+    item = {
+        "sku": sku,
+        "nome_produto": nome_limpo,
+        "loja": "Mercado Livre",
+        "preco_atual": float(preco_atual),
+        "preco_antigo": float(preco_antigo_val),
+        "percentual_desconto": desc_val,
+        "categoria": categoria_padrao,
+        "seller_id": "Mercado Livre Full",
+        "comissao_percent": comissao,
+        "lucro_estimado_reais": lucro,
+        "imagem_url": imagem_url,
+        "url_afiliado": url_afiliado,
+    }
+    if not item_ml_aderente_nicho(item, exigir_nicho_forte=exigir_nicho_forte):
+        return None
+    return item
+
+
+def extrair_dados_mercadolivre_live(
+    url,
+    categoria_padrao="Geral",
+    retornar_diagnostico=False,
+    exigir_nicho_forte=False,
+):
     """
-    Raspa produtos e ofertas do Mercado Livre (suporta Perfil Social de Criador e Vitrines de Categorias).
+    Raspa produtos e ofertas do Mercado Livre (suporta Vitrine Social, /ofertas,
+    /mais-vendidos e busca em lista.) com filtro rigoroso de nicho Tech/Gamer.
     """
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
         "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8",
     }
 
-    termos_banidos = ['cabo', 'pelicula', 'capinha', 'adaptador', 'suporte simples', 'conector']
+    termos_banidos = ['cabo', 'pelicula', 'película', 'capinha', 'adaptador', 'suporte simples', 'conector']
+    diag = {"status_code": None, "suspeita_waf": False, "indicio": None}
+
+    def _retornar(itens, diag_info):
+        out = pd.DataFrame(itens) if PANDAS_DISPONIVEL else itens
+        if retornar_diagnostico:
+            return out, diag_info
+        return out
 
     try:
         response = requests.get(url, headers=headers, timeout=15)
+        diag["status_code"] = response.status_code
         if response.status_code != 200:
-            _diagnosticar_bloqueio_http("Mercado Livre", url, response.status_code, response.text, motivo_extra="http_nao_200")
-            return pd.DataFrame() if PANDAS_DISPONIVEL else []
-        html = response.text
+            diag = _diagnosticar_bloqueio_http(
+                "Mercado Livre", url, response.status_code, response.text, motivo_extra="http_nao_200"
+            )
+            return _retornar([], diag)
+        html_txt = response.text
     except Exception as e:
         resp_err = getattr(e, "response", None)
         sc = getattr(resp_err, "status_code", None)
+        diag["status_code"] = sc
         logging.warning(f"Erro ao buscar URL do Mercado Livre ({url}) [status_code={sc}]: {e}")
-        return pd.DataFrame() if PANDAS_DISPONIVEL else []
+        return _retornar([], diag)
 
-    soup = BeautifulSoup(html, "html.parser")
     processed = []
+    if BeautifulSoup is not None:
+        soup = BeautifulSoup(html_txt, "html.parser")
+        poly_cards = soup.find_all("div", class_=re.compile(r"poly-card", re.I))
+        promo_cards = soup.find_all(["div", "li"], class_=re.compile(r"promotion-item|ui-recommendations-card", re.I)) if not poly_cards else []
+        search_cards = soup.find_all("li", class_=re.compile(r"ui-search-layout__item", re.I)) if not (poly_cards or promo_cards) else []
+        all_cards = poly_cards or promo_cards or search_cards
 
-    # 1. Procura cards Poly (layout moderno do ML, usado no Perfil Social e vitrines)
-    poly_cards = soup.find_all("div", class_=re.compile(r"poly-card", re.I))
+        if not all_cards:
+            diag = _diagnosticar_bloqueio_http(
+                "Mercado Livre", url, response.status_code, html_txt, motivo_extra="0_cards_na_pagina"
+            )
 
-    # 2. Se não achar poly-cards, procura itens da busca tradicional (ui-search-layout__item)
-    search_cards = soup.find_all("li", class_=re.compile(r"ui-search-layout__item", re.I)) if not poly_cards else []
+        for i, card in enumerate(all_cards):
+            try:
+                title_el = (
+                    card.find("a", class_=re.compile(r"poly-component__title", re.I)) or
+                    card.find(class_=re.compile(r"poly-component__title|ui-search-item__title|promotion-item__title|ui-recommendations-card__title", re.I)) or
+                    card.find("h2") or
+                    card.find("a", class_=re.compile(r"ui-search-link", re.I))
+                )
+                if not title_el:
+                    continue
 
-    all_cards = poly_cards or search_cards
-    if not all_cards:
-        _diagnosticar_bloqueio_http("Mercado Livre", url, response.status_code, html, motivo_extra="0_cards_na_pagina")
+                link_el = (
+                    title_el if title_el.name == "a" and title_el.get("href")
+                    else card.find("a", href=True)
+                )
+                if not link_el or not link_el.get("href"):
+                    continue
+                raw_url = link_el["href"]
 
-    for i, card in enumerate(all_cards):
+                img_el = (
+                    card.find("img", class_=re.compile(r"poly-component__picture|ui-search-result-image__element|promotion-item__img", re.I)) or
+                    card.find("img")
+                )
+                imagem_url = None
+                if img_el:
+                    for c in (img_el.get("data-src"), img_el.get("data-srcset"), img_el.get("srcset"), img_el.get("src")):
+                        if c and not str(c).strip().startswith("data:"):
+                            c_str = str(c).split(",")[0].strip().split()[0].strip()
+                            if c_str.startswith("//"):
+                                c_str = f"https:{c_str}"
+                            if c_str.startswith("http"):
+                                imagem_url = c_str
+                                break
+
+                preco_atual = None
+                curr_price_el = (
+                    card.find("div", class_=re.compile(r"poly-price__current", re.I)) or
+                    card.find(class_=re.compile(r"promotion-item__price|ui-recommendations-card__price|ui-search-price__second-line|price-tag-fraction", re.I))
+                )
+                if curr_price_el:
+                    frac = curr_price_el.find(class_=re.compile(r"andes-money-amount__fraction|price-tag-fraction", re.I))
+                    cents = curr_price_el.find(class_=re.compile(r"andes-money-amount__cents", re.I))
+                    if frac:
+                        p_str = frac.text.strip()
+                        if cents:
+                            p_str += f",{cents.text.strip()}"
+                        preco_atual = limpar_preco_ml(p_str)
+                    else:
+                        preco_atual = limpar_preco_ml(curr_price_el.text)
+
+                preco_antigo = None
+                prev_price_el = (
+                    card.find("s", class_=re.compile(r"poly-price__previous|andes-money-amount|promotion-item__oldprice", re.I)) or
+                    card.find(class_=re.compile(r"promotion-item__oldprice|ui-search-price__part--original", re.I))
+                )
+                if prev_price_el:
+                    preco_antigo = limpar_preco_ml(prev_price_el.text)
+
+                percentual_desconto = 0.0
+                disc_el = card.find(class_=re.compile(r"discount|disc-label|promotion-item__discount", re.I))
+                if disc_el:
+                    m = re.search(r"(\d+)\s*%", disc_el.text)
+                    if m:
+                        percentual_desconto = float(m.group(1))
+
+                item = _montar_item_ml_normalizado(
+                    nome=title_el.text,
+                    raw_url=raw_url,
+                    preco_atual=preco_atual,
+                    preco_antigo=preco_antigo,
+                    percentual_desconto=percentual_desconto,
+                    imagem_url=imagem_url,
+                    categoria_padrao=categoria_padrao,
+                    idx=i,
+                    termos_banidos=termos_banidos,
+                    exigir_nicho_forte=exigir_nicho_forte,
+                )
+                if item:
+                    processed.append(item)
+            except Exception:
+                continue
+    else:
+        parser_fb = _MLCardsHTMLParser()
+        parser_fb.feed(html_txt)
+        if not parser_fb.cards:
+            diag = _diagnosticar_bloqueio_http(
+                "Mercado Livre", url, response.status_code, html_txt, motivo_extra="0_cards_na_pagina"
+            )
+        for i, card in enumerate(parser_fb.cards):
+            p_str = card["curr_frac"]
+            if card["curr_cents"] and "," not in p_str:
+                p_str = f"{p_str},{card['curr_cents']}"
+            preco_atual = limpar_preco_ml(p_str)
+            preco_antigo = limpar_preco_ml(card["prev_txt"])
+            desc_pct = 0.0
+            m_disc = re.search(r"(\d+)\s*%", card["disc_txt"])
+            if m_disc:
+                desc_pct = float(m_disc.group(1))
+            item = _montar_item_ml_normalizado(
+                nome=card["nome"],
+                raw_url=card["href"],
+                preco_atual=preco_atual,
+                preco_antigo=preco_antigo,
+                percentual_desconto=desc_pct,
+                imagem_url=card["imagem_url"],
+                categoria_padrao=categoria_padrao,
+                idx=i,
+                termos_banidos=termos_banidos,
+                exigir_nicho_forte=exigir_nicho_forte,
+            )
+            if item:
+                processed.append(item)
+
+    return _retornar(processed, diag)
+
+
+def _montar_url_paginada_ml(url_base, pagina):
+    """Adiciona `page=N` preservando todos os query params existentes (matt_tool, matt_word, ref)."""
+    if int(pagina) <= 1:
+        return url_base
+    parsed = _urllib_parse.urlparse(url_base)
+    qs = _urllib_parse.parse_qs(parsed.query, keep_blank_values=True)
+    qs["page"] = [str(int(pagina))]
+    return _urllib_parse.urlunparse(parsed._replace(query=_urllib_parse.urlencode(qs, doseq=True)))
+
+
+def _chamar_extrator_ml(extrator_fn, url, categoria_padrao, exigir_nicho_forte=False):
+    """Chama extrator (padrao ou mockado em testes) retornando (lista_itens, diag)."""
+    try:
+        res = extrator_fn(
+            url,
+            categoria_padrao=categoria_padrao,
+            retornar_diagnostico=True,
+            exigir_nicho_forte=exigir_nicho_forte,
+        )
+    except TypeError:
+        res = extrator_fn(url, categoria_padrao=categoria_padrao)
+
+    if isinstance(res, tuple) and len(res) == 2:
+        dados, diag = res
+        return _converter_candidatas_para_lista(dados), (diag or {})
+    return _converter_candidatas_para_lista(res), {"suspeita_waf": False, "status_code": 200}
+
+
+def coletar_vitrine_social_ml(
+    url_base=URL_ML_SOCIAL_PADRAO,
+    max_paginas=None,
+    extrator_fn=None,
+    pausa_segundos=2,
+):
+    """
+    Coleta itens da Vitrine Social do Mercado Livre com paginação (`?page=2`, `?page=3`...),
+    interrompendo quando a página vier vazia, bloqueada ou repetir SKUs da página anterior.
+    """
+    if max_paginas is None:
         try:
-            # Título e Link
-            title_el = (
-                card.find("a", class_=re.compile(r"poly-component__title", re.I)) or
-                card.find("h2", class_=re.compile(r"poly-component__title|ui-search-item__title", re.I)) or
-                card.find("h2") or
-                card.find("a", class_=re.compile(r"ui-search-link", re.I))
-            )
-            if not title_el:
+            max_paginas = max(1, int(os.getenv("ML_SOCIAL_MAX_PAGES", "3")))
+        except ValueError:
+            max_paginas = 3
+
+    fn = extrator_fn or extrair_dados_mercadolivre_live
+    coletados = []
+    skus_vistos = set()
+
+    for pag in range(1, int(max_paginas) + 1):
+        url_pag = _montar_url_paginada_ml(url_base, pag)
+        itens_pag, diag = _chamar_extrator_ml(fn, url_pag, categoria_padrao="Games & Tech", exigir_nicho_forte=False)
+        if diag.get("suspeita_waf") or not itens_pag:
+            if pag == 1 and not itens_pag:
+                logging.info("Mercado Livre: Vitrine Social retornou 0 itens na página 1.")
+            break
+
+        novos = []
+        for it in itens_pag:
+            sku = str(it.get("sku", "") or "").strip()
+            if sku and sku not in skus_vistos:
+                skus_vistos.add(sku)
+                novos.append(it)
+
+        if not novos:
+            logging.info(f"Mercado Livre: Vitrine Social página {pag} repetiu itens anteriores. Encerrando paginação.")
+            break
+
+        coletados.extend(novos)
+        logging.info(f"Mercado Livre: Vitrine Social página {pag} -> {len(novos)} novos produtos.")
+        if pag < int(max_paginas) and pausa_segundos:
+            time.sleep(pausa_segundos)
+
+    return coletados
+
+
+def coletar_catalogo_mercadolivre(
+    url_social=URL_ML_SOCIAL_PADRAO,
+    rotas_www=None,
+    categorias_lista=None,
+    max_paginas_social=None,
+    extrator_fn=None,
+    pausa_segundos=2,
+):
+    """
+    Orquestra a coleta completa do Mercado Livre priorizando o domínio principal (`www.mercadolivre.com.br`):
+      1. Vitrine Social paginada (`/social/rafaelmelo825`)
+      2. Rotas públicas de catálogo (`/ofertas` com filtro forte de nicho + `/mais-vendidos/MLB...`)
+      3. Subdomínio `lista.mercadolivre.com.br` protegido por Circuit Breaker (aborta na 1ª detecção WAF)
+    """
+    fn = extrator_fn or extrair_dados_mercadolivre_live
+    rotas_alvo = ROTAS_CATALOGO_ML_WWW if rotas_www is None else rotas_www
+    lista_alvo = list(categorias_lista or [])
+
+    todos_itens = []
+    skus_vistos = set()
+    stats = {
+        "social": 0,
+        "www_catalogo": 0,
+        "lista": 0,
+        "circuit_breaker_ativado": False,
+        "chamadas_lista": 0,
+    }
+
+    def _adicionar(novos_itens):
+        add_cnt = 0
+        for it in novos_itens:
+            sku = str(it.get("sku", "") or "").strip()
+            if not sku or sku in skus_vistos:
                 continue
+            skus_vistos.add(sku)
+            todos_itens.append(it)
+            add_cnt += 1
+        return add_cnt
 
-            nome = title_el.text.strip()
-            if any(t in nome.lower() for t in termos_banidos):
-                continue
+    # 1. Vitrine Social paginada (www.mercadolivre.com.br/social/...)
+    try:
+        logging.info("Mercado Livre: Extraindo produtos da Vitrine Social Oficial (com paginação)...")
+        itens_social = coletar_vitrine_social_ml(
+            url_base=url_social,
+            max_paginas=max_paginas_social,
+            extrator_fn=fn,
+            pausa_segundos=pausa_segundos,
+        )
+        stats["social"] = _adicionar(itens_social)
+    except Exception as exc:
+        logging.warning(f"Erro ao raspar Vitrine Social paginada do ML: {exc}")
 
-            link_el = card.find("a", href=True)
-            if not link_el or not link_el.get("href"):
-                continue
-
-            raw_url = link_el["href"]
-            url_afiliado = converter_link_afiliado_ml(raw_url)
-
-            # Imagem em alta resolução (busca especificamente a foto principal do produto)
-            img_el = (
-                card.find("img", class_=re.compile(r"poly-component__picture|ui-search-result-image__element", re.I)) or
-                card.find("img")
+    # 2. Rotas públicas em www.mercadolivre.com.br (/ofertas e /mais-vendidos/MLB...)
+    for rota in rotas_alvo:
+        if len(rota) == 3:
+            url_rota, cat_nome, exigir_forte = rota
+        else:
+            url_rota, cat_nome = rota[0], rota[1]
+            exigir_forte = "/ofertas" in str(url_rota).lower()
+        try:
+            logging.info(f"Mercado Livre [www]: Buscando {cat_nome} ({url_rota})...")
+            itens_rota, diag_rota = _chamar_extrator_ml(
+                fn, url_rota, categoria_padrao=cat_nome, exigir_nicho_forte=exigir_forte
             )
-            imagem_url = None
-            if img_el:
-                candidatos = [
-                    img_el.get("data-src"),
-                    img_el.get("data-srcset"),
-                    img_el.get("srcset"),
-                    img_el.get("src")
-                ]
-                for c in candidatos:
-                    if c and not str(c).strip().startswith("data:"):
-                        # Limpa srcset (ex: "https://...webp 1x, https://...2x")
-                        c_str = str(c).split(",")[0].strip().split()[0].strip()
-                        if c_str.startswith("//"):
-                            c_str = f"https:{c_str}"
-                        if c_str.startswith("http"):
-                            imagem_url = c_str
-                            break
+            add_n = _adicionar(itens_rota)
+            stats["www_catalogo"] += add_n
+            if add_n:
+                logging.info(f"Mercado Livre [www/{cat_nome}]: {add_n} produtos aderentes ao nicho capturados.")
+            elif diag_rota.get("suspeita_waf"):
+                logging.warning(f"Mercado Livre [www/{cat_nome}] sinalizou bloqueio WAF.")
+            if pausa_segundos:
+                time.sleep(pausa_segundos)
+        except Exception as exc:
+            logging.warning(f"Erro ao buscar rota www do ML ({url_rota}): {exc}")
 
-            # Preço atual
-            preco_atual = None
-            curr_price_el = (
-                card.find("div", class_=re.compile(r"poly-price__current", re.I)) or
-                card.find("span", class_=re.compile(r"price-tag-fraction", re.I)) or
-                card.find("div", class_=re.compile(r"ui-search-price__second-line", re.I))
+    # 3. Subdomínio lista.mercadolivre.com.br protegido por Circuit Breaker na 1ª detecção WAF
+    for url_ml, cat_nome in lista_alvo:
+        try:
+            url_alvo = f"{url_ml}_Desde_49" if random.random() < 0.4 else url_ml
+            logging.info(f"Mercado Livre [lista]: Buscando {cat_nome} ({url_alvo})...")
+            stats["chamadas_lista"] += 1
+            itens_cat, diag_cat = _chamar_extrator_ml(
+                fn, url_alvo, categoria_padrao=cat_nome, exigir_nicho_forte=False
             )
-            if curr_price_el:
-                frac = curr_price_el.find(class_=re.compile(r"andes-money-amount__fraction|price-tag-fraction", re.I))
-                cents = curr_price_el.find(class_=re.compile(r"andes-money-amount__cents", re.I))
-                if frac:
-                    p_str = frac.text.strip()
-                    if cents:
-                        p_str += f",{cents.text.strip()}"
-                    preco_atual = limpar_preco_ml(p_str)
-                else:
-                    preco_atual = limpar_preco_ml(curr_price_el.text)
+            if diag_cat.get("suspeita_waf"):
+                stats["circuit_breaker_ativado"] = True
+                logging.warning(
+                    f"⚡ Circuit Breaker ML ativado: bloqueio WAF ({diag_cat.get('indicio') or diag_cat.get('status_code')}) "
+                    "em lista.mercadolivre.com.br. Abortando demais buscas em lista. nesta execução."
+                )
+                break
 
-            # Preço antigo
-            preco_antigo = None
-            prev_price_el = (
-                card.find("s", class_=re.compile(r"poly-price__previous|andes-money-amount", re.I)) or
-                card.find("s", class_=re.compile(r"ui-search-price__part--original", re.I))
-            )
-            if prev_price_el:
-                preco_antigo = limpar_preco_ml(prev_price_el.text)
+            if not itens_cat and url_alvo != url_ml:
+                stats["chamadas_lista"] += 1
+                itens_cat, diag_retry = _chamar_extrator_ml(
+                    fn, url_ml, categoria_padrao=cat_nome, exigir_nicho_forte=False
+                )
+                if diag_retry.get("suspeita_waf"):
+                    stats["circuit_breaker_ativado"] = True
+                    logging.warning(
+                        f"⚡ Circuit Breaker ML ativado: bloqueio WAF ({diag_retry.get('indicio') or diag_retry.get('status_code')}) "
+                        "em lista.mercadolivre.com.br. Abortando demais buscas em lista. nesta execução."
+                    )
+                    break
 
-            if not preco_atual:
-                continue
+            add_l = _adicionar(itens_cat)
+            stats["lista"] += add_l
+            if add_l:
+                logging.info(f"Mercado Livre [lista/{cat_nome}]: {add_l} produtos encontrados.")
+            if pausa_segundos:
+                time.sleep(pausa_segundos)
+        except Exception as exc:
+            logging.warning(f"Erro ao buscar categoria {cat_nome} do ML: {exc}")
 
-            if not preco_antigo or preco_antigo <= preco_atual:
-                preco_antigo = preco_atual
-
-            # Desconto %
-            percentual_desconto = 0.0
-            disc_el = card.find(class_=re.compile(r"discount|disc-label", re.I))
-            if disc_el:
-                m = re.search(r"(\d+)\s*%", disc_el.text)
-                if m:
-                    percentual_desconto = float(m.group(1))
-
-            if percentual_desconto == 0.0 and preco_antigo > preco_atual:
-                percentual_desconto = round(((preco_antigo - preco_atual) / preco_antigo) * 100, 2)
-
-            comissao = calcular_comissao_mercadolivre(categoria_padrao, nome)
-            lucro = round(preco_atual * (comissao / 100), 2)
-
-            sku_match = re.search(r"(MLB\d+|MLB-\d+)", raw_url, re.I)
-            sku = f"ML_{sku_match.group(1)}" if sku_match else f"ML_{i}_{abs(hash(nome)) % 1000000}"
-
-            item = {
-                "sku": sku,
-                "nome_produto": nome,
-                "loja": "Mercado Livre",
-                "preco_atual": preco_atual,
-                "preco_antigo": preco_antigo,
-                "percentual_desconto": percentual_desconto,
-                "categoria": categoria_padrao,
-                "seller_id": "Mercado Livre Full",
-                "comissao_percent": comissao,
-                "lucro_estimado_reais": lucro,
-                "imagem_url": imagem_url,
-                "url_afiliado": url_afiliado,
-            }
-            processed.append(item)
-        except Exception:
-            continue
-
-    if not processed:
-        return pd.DataFrame()
-
-    return pd.DataFrame(processed)
+    return todos_itens, stats
 
 
 def gerar_json_para_ia(df):
@@ -1941,6 +2428,9 @@ def _bonus_nicho_gamestore(op):
         "lampada", "lâmpada", "tomada", "interruptor", "geladeira",
         "fritadeira", "panela", "aspirador", "cafeteira", "ventilador", "chaleira",
         "lixeira", "dispenser", "saboneteira", "baba", "babá", "banheiro", "cozinha",
+        "fralda", "detergente", "sabao", "sabão", "shampoo", "creme dental",
+        "camiseta", "tenis", "tênis", "colchao", "colchão", "travesseiro",
+        "whey", "creatina", "suplemento", "perfume",
     ]
     if any(t in texto for t in termos_fora_nicho):
         return -150.0
@@ -2815,16 +3305,9 @@ if __name__ == "__main__":
         # Sorteia 3 categorias da Magalu por execução para variar o catálogo
         URLS_BASE_MAGALU = random.sample(POOL_MAGALU, k=3)
 
-        URL_ML_SOCIAL = (
-            "https://www.mercadolivre.com.br/social/rafaelmelo825"
-            "?matt_word=rafaelmelo825&matt_tool=61727000&forceInApp=true"
-            "&ref=BNMjcwPk80fK3V%2FaZkPyOPSUZvCKY1lXkz7gVn1Lk0heRiFWKmz5M4HRd6c6Lzr"
-            "%2FuAj586dkXZ2W8cbQV1wKa2LpVSemU7GsCrR5Mv0Ou4hXSI4eC47TaGOR2DuPSqEh81"
-            "ti8ZXhLB0DAdcCStEU8%2B3IwqjwS6GC2byelKta%2BPLZ9yC8%2FTUySd5A%2ByhIJJQo"
-            "9Gt9NvwD9Dle76xPtnsfM9P9NL%2Fj%2BQiaJVXOUEol2buRlVN5bpKt092dM8jij639Z3JOHg%3D%3D"
-        )
+        URL_ML_SOCIAL = URL_ML_SOCIAL_PADRAO
 
-        # Pool diversificado de buscas e subcategorias no Mercado Livre (rotação a cada disparo)
+        # Pool diversificado de buscas e subcategorias no subdomínio lista. (protegido por Circuit Breaker)
         POOL_ML = [
             ("https://lista.mercadolivre.com.br/games", "Games"),
             ("https://lista.mercadolivre.com.br/controle-sem-fio-gamer", "Games"),
@@ -2840,12 +3323,9 @@ if __name__ == "__main__":
             ("https://lista.mercadolivre.com.br/eletronicos-audio-video", "Áudio & Geek"),
             ("https://lista.mercadolivre.com.br/fone-bluetooth-tws", "Áudio & Geek"),
             ("https://lista.mercadolivre.com.br/caixa-de-som-bluetooth", "Áudio & Geek"),
-            ("https://lista.mercadolivre.com.br/casa-inteligente", "Casa Inteligente"),
-            ("https://lista.mercadolivre.com.br/alexa-echo-dot", "Casa Inteligente"),
-            ("https://lista.mercadolivre.com.br/fita-led-rgb-wifi", "Casa Inteligente"),
         ]
-        # Sorteia 7 frentes diferentes do ML a cada execução para minerar novidades sempre
-        CATEGORIAS_ML = random.sample(POOL_ML, k=7)
+        # Sorteia 5 frentes de lista. (além das rotas fixas em www.mercadolivre.com.br)
+        CATEGORIAS_ML = random.sample(POOL_ML, k=min(5, len(POOL_ML)))
 
         all_dfs = []  
         logging.info("🚀 Iniciando motor Multi-Plataforma: Magalu + Mercado Livre...")
@@ -2871,34 +3351,20 @@ if __name__ == "__main__":
                 all_dfs.append(df_pagina)
                 time.sleep(2)
 
-        # --- 2. RASPAGEM DO MERCADO LIVRE ---
-        logging.info("--- Vasculhando vitrine e ofertas do Mercado Livre ---")
-
-        # 2.1 Vitrine Social Oficial do Rafael (Games, Mais Vendidos e Super Ofertas)
-        try:
-            logging.info("Mercado Livre: Extraindo produtos da Vitrine Social Oficial...")
-            df_ml_social = extrair_dados_mercadolivre_live(URL_ML_SOCIAL, categoria_padrao="Games & Tech")
-            if df_ml_social is not None and not df_ml_social.empty:
-                logging.info(f"Mercado Livre: {len(df_ml_social)} produtos capturados da sua vitrine social!")
-                all_dfs.append(df_ml_social)
-        except Exception as e:
-            logging.warning(f"Erro ao raspar vitrine social do ML: {e}")
-
-        # 2.2 Categorias e Subnichos sorteados nesta rodada (alternando página 1 e página 2)
-        for url_ml, cat_nome in CATEGORIAS_ML:
-            try:
-                url_alvo = f"{url_ml}_Desde_49" if random.random() < 0.4 else url_ml
-                logging.info(f"Mercado Livre: Buscando {cat_nome} ({url_alvo})...")
-                df_ml_cat = extrair_dados_mercadolivre_live(url_alvo, categoria_padrao=cat_nome)
-                if df_ml_cat is None or df_ml_cat.empty:
-                    if url_alvo != url_ml:
-                        df_ml_cat = extrair_dados_mercadolivre_live(url_ml, categoria_padrao=cat_nome)
-                if df_ml_cat is not None and not df_ml_cat.empty:
-                    logging.info(f"Mercado Livre [{cat_nome}]: {len(df_ml_cat)} produtos encontrados.")
-                    all_dfs.append(df_ml_cat)
-                time.sleep(2)
-            except Exception as e:
-                logging.warning(f"Erro ao buscar categoria {cat_nome} do ML: {e}")
+        # --- 2. RASPAGEM DO MERCADO LIVRE (www.mercadolivre.com.br + Circuit Breaker em lista.) ---
+        logging.info("--- Vasculhando vitrine social, catálogo www e buscas do Mercado Livre ---")
+        itens_ml, stats_ml = coletar_catalogo_mercadolivre(
+            url_social=URL_ML_SOCIAL,
+            rotas_www=ROTAS_CATALOGO_ML_WWW,
+            categorias_lista=CATEGORIAS_ML,
+        )
+        logging.info(
+            f"📦 Resumo Mercado Livre: {len(itens_ml)} itens únicos "
+            f"(social={stats_ml['social']}, www_catalogo={stats_ml['www_catalogo']}, "
+            f"lista={stats_ml['lista']}, circuit_breaker={stats_ml['circuit_breaker_ativado']})."
+        )
+        if itens_ml:
+            all_dfs.append(pd.DataFrame(itens_ml))
 
         if not all_dfs:
             logging.error("Nenhum produto extraído de nenhuma das plataformas (possível bloqueio temporário de IP/WAF).")
