@@ -569,6 +569,130 @@ class TestRadar180dEParserGemini(unittest.TestCase):
         self.assertNotIn("MAG_FECH_1", postados)
         self.assertTrue(all(sku.startswith("MAG_TECH_") for sku in postados))
 
+    def test_cota_proporcional_real_e_retry_gemini_max_tokens(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        # 1. Cota proporcional exata ao estoque inédito
+        self.assertEqual(magalu_scrapper.calcular_cotas_lojas(4, 40), (4, 16))
+        self.assertEqual(magalu_scrapper.calcular_cotas_lojas(0, 40), (0, 20))
+        self.assertEqual(magalu_scrapper.calcular_cotas_lojas(30, 10), (15, 5))
+        self.assertEqual(magalu_scrapper.calcular_cotas_lojas(20, 2), (18, 2))
+
+        catalogo_4_ml = json.dumps(
+            [{"sku": f"ML_{i}", "loja": "Mercado Livre"} for i in range(4)]
+            + [{"sku": f"MAG_{j}", "loja": "Magalu"} for j in range(40)]
+        )
+        prompt_4_16 = magalu_scrapper.montar_prompt_usuario_gemini(catalogo_4_ml, qtd_ml=15, qtd_magalu=5)
+        self.assertIn("4 do Mercado Livre e 16 da Magalu", prompt_4_16)
+
+        # 2. Prompt com marketingskills anti-IA e regra do radar intacta
+        self.assertIn("eleve seu nível", magalu_scrapper.ALPHA_PROFIT_SYSTEM_PROMPT)
+        self.assertIn("Não é apenas X, é Y", magalu_scrapper.ALPHA_PROFIT_SYSTEM_PROMPT)
+        self.assertIn("REGRA DE VERACIDADE DO RADAR", magalu_scrapper.ALPHA_PROFIT_SYSTEM_PROMPT)
+
+        # 3. Retry automático no gemini_fx quando 1ª resposta volta MAX_TOKENS (finish_reason=2, chars=0)
+        chamadas = []
+
+        class FakePart:
+            def __init__(self, text):
+                self.text = text
+
+        class FakeModel:
+            def __init__(self, model_name=None, system_instruction=None, generation_config=None):
+                chamadas.append(generation_config)
+
+            def generate_content(self, prompt_usuario, safety_settings=None):
+                if len(chamadas) == 1:
+                    return SimpleNamespace(candidates=[SimpleNamespace(finish_reason=2, content=SimpleNamespace(parts=[]))], text="")
+                return SimpleNamespace(
+                    candidates=[SimpleNamespace(finish_reason=1, content=SimpleNamespace(parts=[FakePart('{"oportunidades": []}')]))],
+                    text='{"oportunidades": []}',
+                )
+
+        fake_genai = SimpleNamespace(GenerativeModel=FakeModel)
+        with patch.object(magalu_scrapper, "configurar_gemini", return_value=True):
+            with patch.object(magalu_scrapper, "genai", fake_genai):
+                res = magalu_scrapper.gemini_fx(catalogo_4_ml, qtd_ml=4, qtd_magalu=16)
+
+        self.assertEqual(len(chamadas), 2)
+        self.assertEqual(chamadas[0]["max_output_tokens"], 16384)
+        self.assertEqual(res, '{"oportunidades": []}')
+
+    def test_deduplicacao_modelos_iguais_no_telegram_e_fallback(self):
+        from unittest.mock import patch
+
+        # 3 variações do mesmo PC Gamer TOB + 10 outros itens tech/gamer distintos
+        repetidos = [
+            {
+                "sku": f"MAG_TOB_{i}",
+                "sku_selecionado": f"MAG_TOB_{i}",
+                "nome_produto": f"Computador PC Gamer Completo TOB Intel Core i5 {8 * (i + 1)}GB SSD 480GB",
+                "loja": "Magalu",
+                "categoria": "Informática",
+                "preco_atual": 2200.0 + i * 50,
+                "preco_antigo": 3500.0,
+                "percentual_desconto": 38.0,
+                "lucro_estimado_reais": 80.0,
+                "url_afiliado": f"https://magalu.test/tob_{i}",
+                "menor_preco_historico": False,
+                "queda_real_percent": 20.0,
+                "score_qualidade": 150.0 - i,
+                "copy_venda": {"titulo": f"PC Gamer TOB {i}", "corpo": "Ok", "cta": "Vai"},
+            }
+            for i in range(3)
+        ]
+        distintos = [
+            {
+                "sku": f"MAG_UNIQ_{k}",
+                "sku_selecionado": f"MAG_UNIQ_{k}",
+                "nome_produto": nome,
+                "loja": "Magalu",
+                "categoria": "Games",
+                "preco_atual": 250.0 + k * 10,
+                "preco_antigo": 350.0 + k * 10,
+                "percentual_desconto": 25.0,
+                "lucro_estimado_reais": 15.0,
+                "url_afiliado": f"https://magalu.test/uniq_{k}",
+                "menor_preco_historico": False,
+                "queda_real_percent": 10.0,
+                "score_qualidade": 100.0 - k,
+                "copy_venda": {"titulo": nome[:40], "corpo": "Ok", "cta": "Vai"},
+            }
+            for k, nome in enumerate([
+                "Headset HyperX Cloud Stinger 2",
+                "SSD Kingston NV2 1TB NVMe",
+                "Monitor Gamer LG UltraGear 24",
+                "Mouse Logitech G203 Lightsync",
+                "Teclado Mecanico Redragon Kumara",
+                "Controle DualSense PS5 Midnight",
+                "Caixa de Som JBL Flip 6",
+                "Notebook Lenovo IdeaPad Slim 3",
+                "Celular Samsung Galaxy A55",
+                "Roteador TP-Link Archer AX53",
+            ])
+        ]
+
+        # 1. Telegram Top 10 deve incluir no máximo 1 variação do PC TOB
+        postados = []
+        with patch.dict(os.environ, {"TELEGRAM_MAX_POSTS": "10"}, clear=False):
+            with patch.object(
+                magalu_scrapper,
+                "enviar_oportunidade_telegram",
+                side_effect=lambda bot, chat, op, **kw: postados.append(op["sku_selecionado"]) or True,
+            ):
+                with patch.object(magalu_scrapper.time, "sleep", return_value=None):
+                    magalu_scrapper.disparar_canal_telegram(
+                        "bot", "@promosgeektech", {"oportunidades": repetidos + distintos}, intervalo_segundos=0
+                    )
+        self.assertEqual(len(postados), 10)
+        self.assertEqual(sum(1 for s in postados if s.startswith("MAG_TOB_")), 1)
+
+        # 2. Fallback determinístico para 10 itens Magalu também prioriza variedade
+        fb_ops = magalu_scrapper.gerar_oportunidades_fallback(repetidos + distintos, qtd_ml=0, qtd_magalu=10)
+        self.assertEqual(len(fb_ops), 10)
+        self.assertEqual(sum(1 for op in fb_ops if op["sku_selecionado"].startswith("MAG_TOB_")), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

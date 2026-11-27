@@ -119,18 +119,16 @@ Eu fornecerei um [INPUT_DATA], que é uma string JSON representando um DataFrame
 * `preco_medio_historico`: Preço mediano de referência nos últimos 180 dias (em R$).
 
 **4. PROCESSO DE DECISÃO ESTRATÉGICA (THOUGHT_PROCESS):**
-Seu objetivo é identificar EXATAMENTE 20 (VINTE) "Oportunidades de Ouro", cumprindo OBRIGATORIAMENTE esta distribuição de lojas:
-* **15 Oportunidades do Mercado Livre** (`loja` = 'Mercado Livre')
-* **5 Oportunidades do Magazine Luiza** (`loja` = 'Magalu')
+Seu objetivo é identificar EXATAMENTE a quantidade e distribuição de lojas pedida na instrução do usuário (padrão: 15 Mercado Livre + 5 Magalu, ou cota proporcional quando uma loja tiver menos candidatos inéditos disponíveis). Nunca trave tentando achar itens inexistentes de uma loja se o usuário informou cota ajustada.
 
 Dentro de cada loja, priorize com base nesta hierarquia de decisão:
-* **Filtro 1: Aderência ao Ticket (Peso 35%)**: Selecione produtos onde `preco_atual` esteja na faixa de R$ 35,00 a R$ 500,00 (Sweet Spot de impulso).
-* **Filtro 2: Percepção de Valor (Peso 35%)**: Priorize produtos com o MAIOR `percentual_desconto`. A escassez e o desconto forte são os maiores gatilhos.
-* **Filtro 3: Potencial de Lucro Líquido (Peso 30%)**: Maximize a receita real do afiliado em R$ (`lucro_estimado_reais`). Um produto com bom desconto e comissão de R$ 25 é muito melhor que um que paga R$ 1.
-* **Filtro 4: Relevância (Qualificador)**: O produto deve ter apelo imediato para o nicho (Games, Geek, Tech, Celulares, Smart House).
+* **Filtro 1: Aderência ao Ticket e Nicho Gamestore (Peso 35%)**: Selecione produtos Tech, Games, Hardware, Celulares e Áudio (evite itens domésticos como lixeiras/fechaduras), preferindo `preco_atual` de R$ 35,00 a R$ 800,00 ou eletrônicos de alta demanda.
+* **Filtro 2: Queda Real & Percepção de Valor (Peso 35%)**: Priorize `queda_real_percent` frente à mediana de 180d e maior `percentual_desconto`.
+* **Filtro 3: Potencial de Lucro Líquido (Peso 30%)**: Maximize `lucro_estimado_reais`.
+* **Filtro 4: Variedade Real (Anti-Duplicata)**: Nunca escolha 2 ou 3 variações quase idênticas do mesmo modelo (ex: mesmo PC gamer ou mesmo notebook variando só cor/RAM) na mesma rodada.
 
 **5. DIRETRIZ DE SAÍDA (OUTPUT):**
-Sua resposta deve ser um JSON ESTRITO e COMPACTO. O JSON deve conter uma chave principal "oportunidades" que é um array de EXATAMENTE 20 objetos (15 do Mercado Livre e 5 da Magalu), intercalando as lojas. Não inclua `url_afiliado` nem `imagem_url` no JSON (nosso backend injeta os links de rastreio pelo `sku_selecionado`), mantendo textos curtos para caber todas as 20 ofertas sem truncar.
+Sua resposta deve ser um JSON ESTRITO e COMPACTO. O JSON deve conter a chave principal `"oportunidades"` com a quantidade exata solicitada no prompt do usuário, intercalando as lojas disponíveis. Não inclua `url_afiliado` nem `imagem_url` no JSON (nosso backend injeta os links de rastreio pelo `sku_selecionado`), mantendo textos enxutos para não estourar o limite de tokens.
 
 **Cumpra este formato EXATAMENTE:**
 {
@@ -145,20 +143,21 @@ Sua resposta deve ser um JSON ESTRITO e COMPACTO. O JSON deve conter uma chave p
       "lucro_estimado_reais": 2.50,
       "razao_selecao": "Justificativa breve (max 12 palavras).",
       "copy_venda": {
-        "titulo": "Título Magnético de Venda (Max 50 caracteres)",
-        "corpo": "Texto de 1-2 frases focado em [Problema + Solução + Escassez].",
-        "cta": "Call to Action (Ex: 'Garanta o seu com XX% OFF aqui!')"
+        "titulo": "Título Direto de Benefício (Max 50 caracteres)",
+        "corpo": "1-2 frases curtas: ganho real no setup/uso + economia concreta em R$ ou %.",
+        "cta": "Call to Action direto (Ex: 'Economize R$ 120 garantindo agora!')"
       }
     }
   ]
 }
 
-**6. PRINCÍPIOS DE COPYWRITING (COPY_PRINCIPLES):**
-A copy **NÃO** é descritiva; ela é **PERSUASIVA**.
-* **Evite:** "Este produto é..."
-* **Use:** "Você finalmente pode...", "Pare de [Problema] com..."
-* **Foco:** Benefício Imediato + Escassez (desconto/limite).
-* **Tom:** Direto, entusiasmado, ligeiramente urgente. "Geek para Geek", mas sem jargões que exijam um manual.
+**6. PRINCÍPIOS DE COPYWRITING (MARKETINGSKILLS: COPYWRITING + COPY-EDITING + PSYCHOLOGY):**
+A copy **NÃO** é robótica nem descritiva; ela fala de **gamer/entusiasta para gamer/entusiasta** em PT-BR natural:
+* **Jobs to Be Done & "So What?":** Mostre o que o leitor ganha na prática (rodar liso, acabar com gargalo, montar setup sem estourar o orçamento, economizar R$ X reais de verdade).
+* **Ancoragem Real de Valor:** Quando houver `preco_antigo > preco_atual` ou `queda_real_percent > 0`, cite a economia concreta (ex.: *"R$ 240 abaixo do valor normal"* ou *"18% abaixo da mediana dos últimos 6 meses"*), sem jamais inventar especificações ou preços.
+* **BANIR AI-TELLS (PROIBIDO):**
+  - NUNCA use frases prontas de IA: *"Não é apenas X, é Y"*, *"Sem X, sem Y, sem Z"*, *"eleve seu nível"*, *"revolucione"*, *"experiência incomparável"*, *"não perca essa oportunidade incrível"*, *"Pensando em..."*, *"Este produto é..."*.
+  - Corte adjetivos vazios (*"incrível"*, *"imperdível"*, *"definitivo"*) e troque por fato concreto.
 * **REGRA DE VERACIDADE DO RADAR (OBRIGATÓRIA):** É estritamente proibido mencionar "mínima histórica", "menor preço registrado", "menor preço", "em mínima" ou "recorde de preço" no título, corpo ou CTA de qualquer produto cujo campo `menor_preco_historico` seja `false` (ou ausente). Só use essa alegação quando `menor_preco_historico` for explicitamente `true`.
 """
 
@@ -708,8 +707,34 @@ def _extrair_texto_resposta_gemini(result):
     return texto, finish_reason
 
 
-def montar_prompt_usuario_gemini(dados_json, qtd_ml=15, qtd_magalu=5):
-    """Monta instrução do usuário adaptando dinamicamente a cota quando uma das lojas retorna 0 itens."""
+def calcular_cotas_lojas(n_ml, n_mg, total=20, alvo_ml=15, alvo_mg=5):
+    """
+    Calcula a cota proporcional exata ao estoque inédito disponível em cada loja,
+    evitando pedir ao Gemini mais itens de uma loja do que existem no catálogo.
+    """
+    disp_ml = max(0, int(n_ml or 0))
+    disp_mg = max(0, int(n_mg or 0))
+    meta_total = min(int(total), disp_ml + disp_mg)
+    if meta_total <= 0:
+        return 0, 0
+
+    q_ml = min(max(0, int(alvo_ml)), disp_ml)
+    q_mg = min(max(0, int(alvo_mg)), disp_mg)
+
+    faltam = meta_total - (q_ml + q_mg)
+    if faltam > 0 and disp_mg > q_mg:
+        add_mg = min(faltam, disp_mg - q_mg)
+        q_mg += add_mg
+        faltam -= add_mg
+    if faltam > 0 and disp_ml > q_ml:
+        add_ml = min(faltam, disp_ml - q_ml)
+        q_ml += add_ml
+
+    return q_ml, q_mg
+
+
+def montar_prompt_usuario_gemini(dados_json, qtd_ml=15, qtd_magalu=5, reforco_direto=False):
+    """Monta instrução do usuário adaptando dinamicamente a cota proporcional ao catálogo real."""
     itens = []
     try:
         parsed = json.loads(dados_json) if isinstance(dados_json, str) else dados_json
@@ -720,29 +745,64 @@ def montar_prompt_usuario_gemini(dados_json, qtd_ml=15, qtd_magalu=5):
 
     n_ml = sum(1 for x in itens if "mercado" in str((x or {}).get("loja", "")).lower())
     n_mg = sum(1 for x in itens if "magalu" in str((x or {}).get("loja", "")).lower())
-    alvo_padrao = int(qtd_ml) + int(qtd_magalu)
-    total_alvo = min(alvo_padrao, len(itens)) if itens else alvo_padrao
 
-    if itens and n_ml == 0 and n_mg > 0:
+    if itens:
+        q_ml, q_mg = calcular_cotas_lojas(
+            n_ml, n_mg, total=max(1, int(qtd_ml) + int(qtd_magalu)), alvo_ml=qtd_ml, alvo_mg=qtd_magalu
+        )
+    else:
+        q_ml, q_mg = int(qtd_ml), int(qtd_magalu)
+
+    total_alvo = q_ml + q_mg
+
+    if itens and q_ml == 0 and q_mg > 0:
         regra_cota = (
             f"EXATAMENTE {total_alvo} Oportunidades de Ouro da Magalu "
             f"(nesta rodada o Mercado Livre não retornou itens; ignore a cota do ML e preencha todas as {total_alvo} ofertas com itens variados da Magalu)"
         )
-    elif itens and n_mg == 0 and n_ml > 0:
+    elif itens and q_mg == 0 and q_ml > 0:
         regra_cota = (
             f"EXATAMENTE {total_alvo} Oportunidades de Ouro do Mercado Livre "
             f"(nesta rodada a Magalu não retornou itens; preencha todas as {total_alvo} ofertas com o Mercado Livre)"
         )
+    elif q_ml < int(qtd_ml) or q_mg < int(qtd_magalu):
+        regra_cota = (
+            f"EXATAMENTE {total_alvo} Oportunidades de Ouro com cota proporcional ao estoque inédito disponível: "
+            f"{q_ml} do Mercado Livre e {q_mg} da Magalu (há apenas {n_ml} itens ML e {n_mg} itens Magalu na lista)"
+        )
     else:
         regra_cota = (
             f"EXATAMENTE {total_alvo} Oportunidades de Ouro "
-            f"({qtd_ml} do Mercado Livre e {qtd_magalu} da Magalu)"
+            f"({q_ml} do Mercado Livre e {q_mg} da Magalu)"
         )
 
-    return (
-        f"Analise o catálogo abaixo e retorne {regra_cota}, priorizando variedade de produtos e categorias "
-        f"(foco em Tech, Games, Hardware, Celulares e Áudio), seguindo as regras do sistema:\n\n{dados_json}"
+    prefixo_retry = (
+        "ATENÇÃO (RETRY): sua resposta anterior veio vazia/truncada. "
+        "Devolva IMEDIATAMENTE o objeto JSON válido e conciso, sem textos longos:\n\n"
+        if reforco_direto
+        else ""
     )
+
+    dados_str = dados_json if isinstance(dados_json, str) else json.dumps(dados_json, ensure_ascii=False, indent=2)
+    return (
+        f"{prefixo_retry}Analise o catálogo abaixo e retorne {regra_cota}, priorizando variedade de produtos e categorias "
+        f"(foco em Tech, Games, Hardware, Celulares e Áudio, sem repetir variações do mesmo modelo), "
+        f"seguindo as regras do sistema:\n\n{dados_str}"
+    )
+
+
+def _compactar_catalogo_para_retry(dados_json, limite=50):
+    """Reduz a lista de candidatos mantendo itens do ML e da Magalu para evitar MAX_TOKENS no retry."""
+    try:
+        itens = json.loads(dados_json) if isinstance(dados_json, str) else list(dados_json)
+        if not isinstance(itens, list) or len(itens) <= limite:
+            return dados_json
+        ml = [x for x in itens if "mercado" in str((x or {}).get("loja", "")).lower()]
+        mg = [x for x in itens if "magalu" in str((x or {}).get("loja", "")).lower()]
+        compacto = ml[:25] + mg[: max(1, limite - len(ml[:25]))]
+        return json.dumps(compacto, ensure_ascii=False, indent=2)
+    except Exception:
+        return dados_json
 
 
 def gemini_fx(dados_json, qtd_ml=15, qtd_magalu=5):
@@ -753,30 +813,45 @@ def gemini_fx(dados_json, qtd_ml=15, qtd_magalu=5):
         )
 
     model_name = os.getenv("GEMINI_MODEL", "gemini-4-hydrogen")
+    safety = {
+        "HARASSMENT": "block_none", "HARM_CATEGORY_SEXUALLY_EXPLICIT": "block_none",
+        "HARM_CATEGORY_HATE_SPEECH": "block_none", "HARM_CATEGORY_DANGEROUS_CONTENT": "block_none",
+    }
     try:
         logging.info(f"Iniciando a análise braba com o modelo Gemini ({model_name})...")
-        model = genai.GenerativeModel(
-            model_name=model_name,
-            system_instruction=ALPHA_PROFIT_SYSTEM_PROMPT,
-            generation_config={
-                "response_mime_type": "application/json",
-                "temperature": 0.65,
-                "max_output_tokens": 8192,
-            }
-        )
-        prompt_usuario = montar_prompt_usuario_gemini(dados_json, qtd_ml=qtd_ml, qtd_magalu=qtd_magalu)
-        result = model.generate_content(
-            prompt_usuario,
-            safety_settings={
-                "HARASSMENT": "block_none", "HARM_CATEGORY_SEXUALLY_EXPLICIT": "block_none",
-                "HARM_CATEGORY_HATE_SPEECH": "block_none", "HARM_CATEGORY_DANGEROUS_CONTENT": "block_none",
-            },
-        )
-        texto, finish_reason = _extrair_texto_resposta_gemini(result)
-        logging.info(
-            f"Análise concluída com sucesso! finish_reason={finish_reason} | chars={len(texto)}"
-        )
-        return texto
+        for tentativa in (1, 2):
+            payload_atual = dados_json if tentativa == 1 else _compactar_catalogo_para_retry(dados_json, limite=50)
+            model = genai.GenerativeModel(
+                model_name=model_name,
+                system_instruction=ALPHA_PROFIT_SYSTEM_PROMPT,
+                generation_config={
+                    "response_mime_type": "application/json",
+                    "temperature": 0.65 if tentativa == 1 else 0.45,
+                    "max_output_tokens": 16384,
+                },
+            )
+            prompt_usuario = montar_prompt_usuario_gemini(
+                payload_atual,
+                qtd_ml=qtd_ml,
+                qtd_magalu=qtd_magalu,
+                reforco_direto=(tentativa > 1),
+            )
+            result = model.generate_content(prompt_usuario, safety_settings=safety)
+            texto, finish_reason = _extrair_texto_resposta_gemini(result)
+            logging.info(
+                f"Análise concluída com sucesso! tentativa={tentativa}/2 | finish_reason={finish_reason} | chars={len(texto)}"
+            )
+            precisa_retry = (not texto.strip()) or (
+                str(finish_reason) in ("2", "MAX_TOKENS", "FinishReason.MAX_TOKENS")
+                and not texto.strip().endswith("}")
+            )
+            if not precisa_retry or tentativa == 2:
+                return texto
+            logging.warning(
+                f"⚠️ Gemini retornou resposta vazia/truncada (finish_reason={finish_reason}, chars={len(texto)}). "
+                "Executando retry automático (2/2)..."
+            )
+        return ""
     except Exception as e:
         logging.error(f"Putz, a IA falhou: {e}")
         return json.dumps({"erro": "A análise da IA falhou", "motivo": str(e)}, ensure_ascii=False)
@@ -864,9 +939,51 @@ def _converter_candidatas_para_lista(candidatas):
     return []
 
 
+def _chave_modelo_produto(nome_produto):
+    """Extrai chave canônica de modelo (5 primeiros tokens) para evitar variações repetidas na mesma rodada."""
+    import unicodedata
+
+    bruto = unicodedata.normalize("NFKD", str(nome_produto or "").lower())
+    sem_acentos = "".join(ch for ch in bruto if not unicodedata.combining(ch))
+    tokens = [t for t in re.findall(r"[a-z0-9]+", sem_acentos) if len(t) >= 2 or t.isdigit()]
+    if not tokens:
+        return str(nome_produto or "").strip().lower()[:28]
+    return " ".join(tokens[:5])
+
+
+def _selecionar_sem_repetir_modelos(lista_itens, limite, campo_nome="nome_produto"):
+    """
+    Seleciona até `limite` itens priorizando aderentes ao nicho e modelos distintos;
+    itens fora de nicho (penalizados) só entram se faltar catálogo aderente.
+    """
+    aderentes = [x for x in lista_itens if _bonus_nicho_gamestore(x) >= 0]
+    penalizados = [x for x in lista_itens if _bonus_nicho_gamestore(x) < 0]
+
+    escolhidos = []
+    sobras_aderentes = []
+    modelos_vistos = set()
+
+    for item in aderentes:
+        chave = _chave_modelo_produto(item.get(campo_nome) or item.get("titulo") or "")
+        if chave and chave in modelos_vistos:
+            sobras_aderentes.append(item)
+        else:
+            if chave:
+                modelos_vistos.add(chave)
+            escolhidos.append(item)
+            if len(escolhidos) >= limite:
+                return escolhidos
+
+    for item in sobras_aderentes + penalizados:
+        escolhidos.append(item)
+        if len(escolhidos) >= limite:
+            break
+    return escolhidos
+
+
 def gerar_oportunidades_fallback(candidatas, qtd_ml=15, qtd_magalu=5):
     """
-    Gera seleção determinística (15 ML + 5 Magalu) a partir das candidatas ranqueadas
+    Gera seleção determinística (respeitando cotas e diversidade de modelos) a partir das candidatas
     caso o Gemini falhe, retorne JSON truncado ou lista vazia — evita perda silenciosa dos canais.
     """
     itens = _converter_candidatas_para_lista(candidatas)
@@ -891,15 +1008,18 @@ def gerar_oportunidades_fallback(candidatas, qtd_ml=15, qtd_magalu=5):
     ml_itens = [x for x in ordenados if "mercado" in str(x.get("loja", "")).lower()]
     mg_itens = [x for x in ordenados if "magalu" in str(x.get("loja", "")).lower()]
 
-    sel_ml = ml_itens[:qtd_ml]
-    sel_mg = mg_itens[:qtd_magalu]
+    sel_ml = _selecionar_sem_repetir_modelos(ml_itens, int(qtd_ml))
+    sel_mg = _selecionar_sem_repetir_modelos(mg_itens, int(qtd_magalu))
 
-    total_alvo = qtd_ml + qtd_magalu
+    total_alvo = int(qtd_ml) + int(qtd_magalu)
     if len(sel_ml) + len(sel_mg) < total_alvo:
         usados = {str(x.get("sku", "")) for x in sel_ml + sel_mg}
+        modelos_usados = {_chave_modelo_produto(x.get("nome_produto", "")) for x in sel_ml + sel_mg}
         sobras = [x for x in ordenados if str(x.get("sku", "")) not in usados]
+        sobras_unicas = [x for x in sobras if _chave_modelo_produto(x.get("nome_produto", "")) not in modelos_usados]
+        sobras_rep = [x for x in sobras if _chave_modelo_produto(x.get("nome_produto", "")) in modelos_usados]
         faltam = total_alvo - (len(sel_ml) + len(sel_mg))
-        for item in sobras[:faltam]:
+        for item in (sobras_unicas + sobras_rep)[:faltam]:
             if "magalu" in str(item.get("loja", "")).lower():
                 sel_mg.append(item)
             else:
@@ -921,6 +1041,8 @@ def gerar_oportunidades_fallback(candidatas, qtd_ml=15, qtd_magalu=5):
     for row in intercalados[:total_alvo]:
         nome = str(row.get("nome_produto") or "Oferta Selecionada").strip()
         preco = float(row.get("preco_atual", 0.0) or 0.0)
+        preco_ant = float(row.get("preco_antigo", preco) or preco)
+        economia = round(max(0.0, preco_ant - preco), 2)
         desc = float(row.get("percentual_desconto", 0.0) or 0.0)
         loja = str(row.get("loja") or storage_db.inferir_loja_por_sku(row.get("sku", ""))).strip()
         is_min = bool(row.get("menor_preco_historico", False))
@@ -928,12 +1050,18 @@ def gerar_oportunidades_fallback(candidatas, qtd_ml=15, qtd_magalu=5):
 
         titulo = (nome[:47] + "...") if len(nome) > 50 else nome
         if is_min:
-            corpo = f"Atingiu o menor preço registrado em 180 dias ({queda:.0f}% abaixo da mediana recente)."
-        elif desc >= 10:
-            corpo = f"Baixou para R$ {preco:.2f} com {desc:.0f}% de desconto verificado na vitrine."
+            corpo = f"Bateu o menor preço em 180 dias ({queda:.0f}% abaixo da mediana recente) — queda real comprovada."
+        elif economia >= 30 and desc >= 10:
+            corpo = f"Corte real de R$ {economia:,.0f} frente ao valor anterior ({desc:.0f}% OFF) nesta janela em {loja}.".replace(",", ".")
+        elif queda >= 5:
+            corpo = f"Está {queda:.0f}% abaixo da mediana dos últimos 6 meses em {loja}, saindo por R$ {preco:.2f}."
         else:
-            corpo = f"Oportunidade selecionada por preço competitivo em {loja} por R$ {preco:.2f}."
-        cta = f"Garanta com {desc:.0f}% OFF agora!" if desc >= 5 else "Confira os detalhes antes que acabe!"
+            corpo = f"Condição competitiva no radar em {loja} por R$ {preco:.2f} para upgrade direto no setup."
+        cta = (
+            f"Economize R$ {economia:,.0f} garantindo agora!".replace(",", ".")
+            if economia >= 20
+            else (f"Garanta com {desc:.0f}% OFF enquanto dura!" if desc >= 5 else "Confira o preço antes do reajuste!")
+        )
 
         resultado.append({
             "sku_selecionado": str(row.get("sku", "")),
@@ -1356,7 +1484,7 @@ def disparar_canal_telegram(bot_token, chat_id, oportunidades_dict, df_todos_pro
     except ValueError:
         max_posts = 10
 
-    oportunidades_selecionadas = sorted(
+    oportunidades_ordenadas = sorted(
         oportunidades,
         key=lambda op: (
             _bonus_nicho_gamestore(op) +
@@ -1366,7 +1494,8 @@ def disparar_canal_telegram(bot_token, chat_id, oportunidades_dict, df_todos_pro
             float(op.get("lucro_estimado_reais", 0.0) or 0.0) * 0.4
         ),
         reverse=True,
-    )[:max_posts]
+    )
+    oportunidades_selecionadas = _selecionar_sem_repetir_modelos(oportunidades_ordenadas, max_posts)
 
     # Indexa imagem_url e preco_antigo por SKU, URL e Nome (evita perder foto se a IA alterar o SKU)
     mapa_por_sku = {}
@@ -2804,22 +2933,22 @@ if __name__ == "__main__":
             jitter
         )
 
-        # Prepara o catálogo balanceado para a IA: Top Mercado Livre + Top Magalu
-        df_ml = df_produtos[df_produtos["loja"] == "Mercado Livre"].sort_values(by="score_qualidade", ascending=False).head(80)
-        df_magalu = df_produtos[df_produtos["loja"] == "Magalu"].sort_values(by="score_qualidade", ascending=False).head(40)
+        # Prepara o catálogo balanceado e calcula cota proporcional real ao estoque inédito
+        df_ml_all = df_produtos[df_produtos["loja"] == "Mercado Livre"].sort_values(by="score_qualidade", ascending=False)
+        df_mg_all = df_produtos[df_produtos["loja"] == "Magalu"].sort_values(by="score_qualidade", ascending=False)
+
+        qtd_ml_alvo, qtd_magalu_alvo = calcular_cotas_lojas(
+            len(df_ml_all), len(df_mg_all), total=20, alvo_ml=15, alvo_mg=5
+        )
+        limite_ml = 80 if qtd_magalu_alvo > 0 else 120
+        df_ml = df_ml_all.head(limite_ml)
+        limite_mg = max(40, 120 - len(df_ml))
+        df_magalu = df_mg_all.head(limite_mg)
 
         if not df_ml.empty and not df_magalu.empty:
             df_ordenado_para_ia = pd.concat([df_ml, df_magalu], ignore_index=True)
-            qtd_ml_alvo, qtd_magalu_alvo = 15, 5
-        elif df_ml.empty and not df_magalu.empty:
-            df_ordenado_para_ia = df_produtos.sort_values(by="score_qualidade", ascending=False).head(120)
-            qtd_ml_alvo, qtd_magalu_alvo = 0, 20
-        elif df_magalu.empty and not df_ml.empty:
-            df_ordenado_para_ia = df_produtos.sort_values(by="score_qualidade", ascending=False).head(120)
-            qtd_ml_alvo, qtd_magalu_alvo = 20, 0
         else:
             df_ordenado_para_ia = df_produtos.sort_values(by="score_qualidade", ascending=False).head(120)
-            qtd_ml_alvo, qtd_magalu_alvo = 15, 5
 
         logging.info(
             f"Enviando {len(df_ordenado_para_ia)} candidatos inéditos para a IA escolher "
